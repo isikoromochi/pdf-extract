@@ -4,7 +4,7 @@ use test_log::test;
 // Shorthand for creating ExpectedText
 // example: expected!("atomic.pdf", "Atomic Data");
 macro_rules! expected {
-    ($filename:expr, $text:expr) => {
+    ($filename:expr_2021, $text:expr_2021) => {
         ExpectedText {
             filename: $filename,
             text: $text,
