@@ -1,26 +1,18 @@
-extern crate lopdf;
-
 use adobe_cmap_parser::{ByteMapping, CIDRange, CodeRange};
 use encoding_rs::UTF_16BE;
+use euclid::vec2;
 use euclid::*;
+use log::{debug, error, warn};
 use lopdf::content::Content;
 use lopdf::encryption::DecryptionError;
-pub use lopdf::*;
-use std::fmt::{Debug, Formatter};
-extern crate adobe_cmap_parser;
-extern crate encoding_rs;
-extern crate euclid;
-extern crate type1_encoding_parser;
-extern crate unicode_normalization;
-use euclid::vec2;
-use log::{debug, error, warn};
+use lopdf::*;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::marker::PhantomData;
 use std::rc::Rc;
-#[allow(hidden_glob_reexports)]
 use std::result::Result;
 use std::slice::Iter;
 use std::str;
@@ -2295,10 +2287,6 @@ impl<W: ConvertToFmt> OutputDev for PlainTextOutput<W> {
       Ok(())
    }
 }
-
-/// Does nothing. The body consisted entirely of `dlog!` calls, which expanded to
-/// nothing, so this has never emitted any output. Kept so the public API is unchanged.
-pub fn print_metadata(_doc: &Document) {}
 
 /// Extract the text from a pdf at `path` and return a `String` with the results
 pub fn extract_text<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<String, OutputError> {
