@@ -7,7 +7,6 @@ use std::path;
 use std::io::BufWriter;
 use std::fs::File;
 use pdf_extract::*;
-use lopdf::*;
 use simple_logger::SimpleLogger;
 
 fn main() {
@@ -37,8 +36,8 @@ fn main() {
     };
 
     if doc.is_encrypted() {
-        doc.decrypt("");
+        doc.decrypt("").expect("could not decrypt");
     }
 
-    output_doc(&doc, output.as_mut());
+    output_doc(&doc, output.as_mut()).expect("could not extract text");
 }

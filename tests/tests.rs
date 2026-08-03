@@ -51,11 +51,11 @@ impl ExpectedText<'_> {
             let docs_cache = "tests/docs_cache";
             if !std::path::Path::new(docs_cache).exists() {
                 // This might race with exists test above, but that's fine
-                if let Err(e) = std::fs::create_dir(docs_cache) {
-                    if e.kind() != std::io::ErrorKind::AlreadyExists {
-                        panic!("Failed to create directory {}, {}", docs_cache, e);
-                    }
-                } 
+                if let Err(e) = std::fs::create_dir(docs_cache)
+                    && e.kind() != std::io::ErrorKind::AlreadyExists
+                {
+                    panic!("Failed to create directory {}, {}", docs_cache, e);
+                }
             }
             let file_path = format!("{}/{}", docs_cache, filename.replace(".link", ""));
             if std::path::Path::new(&file_path).exists() {
