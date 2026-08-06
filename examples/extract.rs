@@ -1,6 +1,3 @@
-extern crate lopdf;
-extern crate pdf_extract;
-
 use pdf_extract::{lopdf::Document, *};
 use simple_logger::SimpleLogger;
 use std::env;
