@@ -21,6 +21,7 @@ mod core_fonts;
 mod encodings;
 mod glyphnames;
 mod zapfglyphnames;
+pub use lopdf;
 
 pub struct Space;
 pub type Transform = Transform2D<f64, Space, Space>;
@@ -2493,7 +2494,7 @@ fn output_doc_inner<'a>(
    };
    let art_box = get::<Option<Vec<f64>>>(doc, page_dict, b"ArtBox").map(|x| (x[0], x[1], x[2], x[3]));
    output.begin_page(page_num, &media_box, art_box)?;
-   p.process_stream(doc, doc.get_page_content(object_id).unwrap(), resources, &media_box, output)?;
+   p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output)?;
    output.end_page()?;
    Ok(())
 }
