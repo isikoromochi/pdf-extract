@@ -9,7 +9,7 @@ use lopdf::*;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::fs::File;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -26,41 +26,14 @@ pub use lopdf;
 pub struct Space;
 pub type Transform = Transform2D<f64, Space, Space>;
 
-#[derive(Debug)]
-pub enum OutputError {
-   FormatError(std::fmt::Error),
-   IoError(std::io::Error),
-   PdfError(lopdf::Error),
-}
-
-impl std::fmt::Display for OutputError {
-   fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-      match self {
-         OutputError::FormatError(e) => write!(f, "Formating error: {}", e),
-         OutputError::IoError(e) => write!(f, "IO error: {}", e),
-         OutputError::PdfError(e) => write!(f, "PDF error: {}", e),
-      }
-   }
-}
-
-impl std::error::Error for OutputError {}
-
-impl From<std::fmt::Error> for OutputError {
-   fn from(e: std::fmt::Error) -> Self {
-      OutputError::FormatError(e)
-   }
-}
-
-impl From<std::io::Error> for OutputError {
-   fn from(e: std::io::Error) -> Self {
-      OutputError::IoError(e)
-   }
-}
-
-impl From<lopdf::Error> for OutputError {
-   fn from(e: lopdf::Error) -> Self {
-      OutputError::PdfError(e)
-   }
+#[derive(Debug, thiserror::Error)]
+pub enum PdfExtractError {
+   #[error("Formating error: {0}")]
+   FormatError(#[from] std::fmt::Error),
+   #[error("IO error: {0}")]
+   IoError(#[from] std::io::Error),
+   #[error("PDF error: {0}")]
+   PdfError(#[from] lopdf::Error),
 }
 
 #[allow(dead_code)]
@@ -72,6 +45,7 @@ fn get_info(doc: &Document) -> Option<&Dictionary> {
    }
    None
 }
+
 #[allow(dead_code)]
 fn get_catalog(doc: &Document) -> &Dictionary {
    if let Object::Reference(id) = doc.trailer.get(b"Root").unwrap()
@@ -1272,7 +1246,7 @@ fn show_text(
    _tlm: &Transform,
    _flip_ctm: &Transform,
    output: &mut dyn OutputDev,
-) -> Result<(), OutputError> {
+) -> Result<(), PdfExtractError> {
    let ts = &mut gs.ts;
    let font = ts.font.as_ref().unwrap();
    //let encoding = font.encoding.as_ref().map(|x| &x[..]).unwrap_or(&PDFDocEncoding);
@@ -1578,7 +1552,7 @@ impl<'a> Processor<'a> {
       resources: &'a Dictionary,
       media_box: &MediaBox,
       output: &mut dyn OutputDev,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       let content = Content::decode(&content).unwrap();
       let mut gs: GraphicsState = GraphicsState {
          ts: TextState {
@@ -1880,8 +1854,8 @@ pub trait OutputDev {
       page_num: u32,
       media_box: &MediaBox,
       art_box: Option<(f64, f64, f64, f64)>,
-   ) -> Result<(), OutputError>;
-   fn end_page(&mut self) -> Result<(), OutputError>;
+   ) -> Result<(), PdfExtractError>;
+   fn end_page(&mut self) -> Result<(), PdfExtractError>;
    fn output_character(
       &mut self,
       trm: &Transform,
@@ -1889,17 +1863,17 @@ pub trait OutputDev {
       spacing: f64,
       font_size: f64,
       char: &str,
-   ) -> Result<(), OutputError>;
-   fn begin_word(&mut self) -> Result<(), OutputError>;
-   fn end_word(&mut self) -> Result<(), OutputError>;
-   fn end_line(&mut self) -> Result<(), OutputError>;
+   ) -> Result<(), PdfExtractError>;
+   fn begin_word(&mut self) -> Result<(), PdfExtractError>;
+   fn end_word(&mut self) -> Result<(), PdfExtractError>;
+   fn end_line(&mut self) -> Result<(), PdfExtractError>;
    fn stroke(
       &mut self,
       _ctm: &Transform,
       _colorspace: &ColorSpace,
       _color: &[f64],
       _path: &Path,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       Ok(())
    }
    fn fill(
@@ -1908,7 +1882,7 @@ pub trait OutputDev {
       _colorspace: &ColorSpace,
       _color: &[f64],
       _path: &Path,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       Ok(())
    }
 }
@@ -1953,7 +1927,7 @@ impl<'a> HTMLOutput<'a> {
          buf_font_size: 0.,
       }
    }
-   fn flush_string(&mut self) -> Result<(), OutputError> {
+   fn flush_string(&mut self) -> Result<(), PdfExtractError> {
       if !self.buf.is_empty() {
          let position = self.buf_ctm.post_transform(&self.flip_ctm);
          let transformed_font_size_vec = self.buf_ctm.transform_vector(vec2(self.buf_font_size, self.buf_font_size));
@@ -1978,7 +1952,7 @@ impl<'a> HTMLOutput<'a> {
 type ArtBox = (f64, f64, f64, f64);
 
 impl<'a> OutputDev for HTMLOutput<'a> {
-   fn begin_page(&mut self, page_num: u32, media_box: &MediaBox, _: Option<ArtBox>) -> Result<(), OutputError> {
+   fn begin_page(&mut self, page_num: u32, media_box: &MediaBox, _: Option<ArtBox>) -> Result<(), PdfExtractError> {
       write!(self.file, "<meta charset='utf-8' /> ")?;
       write!(self.file, "<!-- page {} -->", page_num)?;
       write!(
@@ -1991,7 +1965,7 @@ impl<'a> OutputDev for HTMLOutput<'a> {
       self.flip_ctm = Transform::row_major(1., 0., 0., -1., 0., media_box.ury - media_box.lly);
       Ok(())
    }
-   fn end_page(&mut self) -> Result<(), OutputError> {
+   fn end_page(&mut self) -> Result<(), PdfExtractError> {
       self.flush_string()?;
       self.buf = String::new();
       self.last_ctm = Transform::identity();
@@ -2005,7 +1979,7 @@ impl<'a> OutputDev for HTMLOutput<'a> {
       spacing: f64,
       font_size: f64,
       char: &str,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       if trm.approx_eq(&self.last_ctm) {
          let position = trm.post_transform(&self.flip_ctm);
          let (x, y) = (position.m31, position.m32);
@@ -2033,13 +2007,13 @@ impl<'a> OutputDev for HTMLOutput<'a> {
 
       Ok(())
    }
-   fn begin_word(&mut self) -> Result<(), OutputError> {
+   fn begin_word(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn end_word(&mut self) -> Result<(), OutputError> {
+   fn end_word(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn end_line(&mut self) -> Result<(), OutputError> {
+   fn end_line(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
 }
@@ -2059,7 +2033,7 @@ impl<'a> OutputDev for SVGOutput<'a> {
       _page_num: u32,
       media_box: &MediaBox,
       art_box: Option<(f64, f64, f64, f64)>,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       let ver = 1.1;
       writeln!(self.file, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>")?;
       if ver == 1.1 {
@@ -2102,7 +2076,7 @@ impl<'a> OutputDev for SVGOutput<'a> {
       )?;
       Ok(())
    }
-   fn end_page(&mut self) -> Result<(), OutputError> {
+   fn end_page(&mut self) -> Result<(), PdfExtractError> {
       writeln!(self.file, "</g>")?;
       write!(self.file, "</svg>")?;
       Ok(())
@@ -2114,16 +2088,16 @@ impl<'a> OutputDev for SVGOutput<'a> {
       _spacing: f64,
       _font_size: f64,
       _char: &str,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn begin_word(&mut self) -> Result<(), OutputError> {
+   fn begin_word(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn end_word(&mut self) -> Result<(), OutputError> {
+   fn end_word(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn end_line(&mut self) -> Result<(), OutputError> {
+   fn end_line(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
    fn fill(
@@ -2132,7 +2106,7 @@ impl<'a> OutputDev for SVGOutput<'a> {
       _colorspace: &ColorSpace,
       _color: &[f64],
       path: &Path,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       write!(
          self.file,
          "<g transform='matrix({}, {}, {}, {}, {}, {})'>",
@@ -2234,11 +2208,11 @@ impl<W: ConvertToFmt> PlainTextOutput<W> {
 /* There are some structural hints that PDFs can use to signal word and line endings:
  * however relying on these is not likely to be sufficient. */
 impl<W: ConvertToFmt> OutputDev for PlainTextOutput<W> {
-   fn begin_page(&mut self, _page_num: u32, media_box: &MediaBox, _: Option<ArtBox>) -> Result<(), OutputError> {
+   fn begin_page(&mut self, _page_num: u32, media_box: &MediaBox, _: Option<ArtBox>) -> Result<(), PdfExtractError> {
       self.flip_ctm = Transform2D::row_major(1., 0., 0., -1., 0., media_box.ury - media_box.lly);
       Ok(())
    }
-   fn end_page(&mut self) -> Result<(), OutputError> {
+   fn end_page(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
    fn output_character(
@@ -2248,7 +2222,7 @@ impl<W: ConvertToFmt> OutputDev for PlainTextOutput<W> {
       _spacing: f64,
       font_size: f64,
       char: &str,
-   ) -> Result<(), OutputError> {
+   ) -> Result<(), PdfExtractError> {
       let position = trm.post_transform(&self.flip_ctm);
       let transformed_font_size_vec = trm.transform_vector(vec2(font_size, font_size));
       // get the length of one sized of the square with the same area with a rectangle of size (x, y)
@@ -2276,21 +2250,21 @@ impl<W: ConvertToFmt> OutputDev for PlainTextOutput<W> {
       self.last_end = x + width * transformed_font_size;
       Ok(())
    }
-   fn begin_word(&mut self) -> Result<(), OutputError> {
+   fn begin_word(&mut self) -> Result<(), PdfExtractError> {
       self.first_char = true;
       Ok(())
    }
-   fn end_word(&mut self) -> Result<(), OutputError> {
+   fn end_word(&mut self) -> Result<(), PdfExtractError> {
       Ok(())
    }
-   fn end_line(&mut self) -> Result<(), OutputError> {
+   fn end_line(&mut self) -> Result<(), PdfExtractError> {
       //write!(self.file, "\n");
       Ok(())
    }
 }
 
 /// Extract the text from a pdf at `path` and return a `String` with the results
-pub fn extract_text<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<String, OutputError> {
+pub fn extract_text<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<String, PdfExtractError> {
    let mut s = String::new();
    {
       let mut output = PlainTextOutput::new(&mut s);
@@ -2301,7 +2275,7 @@ pub fn extract_text<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<
    Ok(s)
 }
 
-fn maybe_decrypt(doc: &mut Document) -> Result<(), OutputError> {
+fn maybe_decrypt(doc: &mut Document) -> Result<(), PdfExtractError> {
    if !doc.is_encrypted() {
       return Ok(());
    }
@@ -2313,7 +2287,7 @@ fn maybe_decrypt(doc: &mut Document) -> Result<(), OutputError> {
          )
       }
 
-      return Err(OutputError::PdfError(e));
+      return Err(PdfExtractError::PdfError(e));
    }
 
    Ok(())
@@ -2322,7 +2296,7 @@ fn maybe_decrypt(doc: &mut Document) -> Result<(), OutputError> {
 pub fn extract_text_encrypted<P: std::convert::AsRef<std::path::Path>>(
    path: P,
    password: &str,
-) -> Result<String, OutputError> {
+) -> Result<String, PdfExtractError> {
    let mut s = String::new();
    {
       let mut output = PlainTextOutput::new(&mut s);
@@ -2332,7 +2306,7 @@ pub fn extract_text_encrypted<P: std::convert::AsRef<std::path::Path>>(
    Ok(s)
 }
 
-pub fn extract_text_from_mem(buffer: &[u8]) -> Result<String, OutputError> {
+pub fn extract_text_from_mem(buffer: &[u8]) -> Result<String, PdfExtractError> {
    let mut s = String::new();
    {
       let mut output = PlainTextOutput::new(&mut s);
@@ -2343,7 +2317,7 @@ pub fn extract_text_from_mem(buffer: &[u8]) -> Result<String, OutputError> {
    Ok(s)
 }
 
-pub fn extract_text_from_mem_encrypted(buffer: &[u8], password: &str) -> Result<String, OutputError> {
+pub fn extract_text_from_mem_encrypted(buffer: &[u8], password: &str) -> Result<String, PdfExtractError> {
    let mut s = String::new();
    {
       let mut output = PlainTextOutput::new(&mut s);
@@ -2353,7 +2327,7 @@ pub fn extract_text_from_mem_encrypted(buffer: &[u8], password: &str) -> Result<
    Ok(s)
 }
 
-fn extract_text_by_page(doc: &Document, page_num: u32) -> Result<String, OutputError> {
+fn extract_text_by_page(doc: &Document, page_num: u32) -> Result<String, PdfExtractError> {
    let mut s = String::new();
    {
       let mut output = PlainTextOutput::new(&mut s);
@@ -2363,7 +2337,7 @@ fn extract_text_by_page(doc: &Document, page_num: u32) -> Result<String, OutputE
 }
 
 /// Extract the text from a pdf at `path` and return a `Vec<String>` with the results separately by page
-pub fn extract_text_by_pages<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<Vec<String>, OutputError> {
+pub fn extract_text_by_pages<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<Vec<String>, PdfExtractError> {
    let mut v = Vec::new();
    {
       let mut doc = Document::load(path)?;
@@ -2380,7 +2354,7 @@ pub fn extract_text_by_pages<P: std::convert::AsRef<std::path::Path>>(path: P) -
 pub fn extract_text_by_pages_encrypted<P: std::convert::AsRef<std::path::Path>>(
    path: P,
    password: &str,
-) -> Result<Vec<String>, OutputError> {
+) -> Result<Vec<String>, PdfExtractError> {
    let mut v = Vec::new();
    {
       let mut doc = Document::load(path)?;
@@ -2394,7 +2368,7 @@ pub fn extract_text_by_pages_encrypted<P: std::convert::AsRef<std::path::Path>>(
    Ok(v)
 }
 
-pub fn extract_text_from_mem_by_pages(buffer: &[u8]) -> Result<Vec<String>, OutputError> {
+pub fn extract_text_from_mem_by_pages(buffer: &[u8]) -> Result<Vec<String>, PdfExtractError> {
    let mut v = Vec::new();
    {
       let mut doc = Document::load_mem(buffer)?;
@@ -2408,7 +2382,7 @@ pub fn extract_text_from_mem_by_pages(buffer: &[u8]) -> Result<Vec<String>, Outp
    Ok(v)
 }
 
-pub fn extract_text_from_mem_by_pages_encrypted(buffer: &[u8], password: &str) -> Result<Vec<String>, OutputError> {
+pub fn extract_text_from_mem_by_pages_encrypted(buffer: &[u8], password: &str) -> Result<Vec<String>, PdfExtractError> {
    let mut v = Vec::new();
    {
       let mut doc = Document::load_mem(buffer)?;
@@ -2436,13 +2410,17 @@ fn get_inherited<'a, T: FromObj<'a>>(doc: &'a Document, dict: &'a Dictionary, ke
    }
 }
 
-pub fn output_doc_encrypted(doc: &mut Document, output: &mut dyn OutputDev, password: &str) -> Result<(), OutputError> {
+pub fn output_doc_encrypted(
+   doc: &mut Document,
+   output: &mut dyn OutputDev,
+   password: &str,
+) -> Result<(), PdfExtractError> {
    doc.decrypt(password)?;
    output_doc(doc, output)
 }
 
 /// Parse a given document and output it to `output`
-pub fn output_doc(doc: &Document, output: &mut dyn OutputDev) -> Result<(), OutputError> {
+pub fn output_doc(doc: &Document, output: &mut dyn OutputDev) -> Result<(), PdfExtractError> {
    if doc.is_encrypted() {
       error!(
          "Encrypted documents must be decrypted with a password using {{extract_text|extract_text_from_mem|output_doc}}_encrypted"
@@ -2459,7 +2437,7 @@ pub fn output_doc(doc: &Document, output: &mut dyn OutputDev) -> Result<(), Outp
    Ok(())
 }
 
-pub fn output_doc_page(doc: &Document, output: &mut dyn OutputDev, page_num: u32) -> Result<(), OutputError> {
+pub fn output_doc_page(doc: &Document, output: &mut dyn OutputDev, page_num: u32) -> Result<(), PdfExtractError> {
    if doc.is_encrypted() {
       error!(
          "Encrypted documents must be decrypted with a password using {{extract_text|extract_text_from_mem|output_doc}}_encrypted"
@@ -2480,7 +2458,7 @@ fn output_doc_inner<'a>(
    p: &mut Processor<'a>,
    output: &mut dyn OutputDev,
    empty_resources: &'a Dictionary,
-) -> Result<(), OutputError> {
+) -> Result<(), PdfExtractError> {
    let page_dict = doc.get_object(object_id).unwrap().as_dict().unwrap();
    // XXX: Some pdfs lack a Resources directory
    let resources = get_inherited(doc, page_dict, b"Resources").unwrap_or(empty_resources);

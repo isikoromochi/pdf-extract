@@ -22,6 +22,7 @@ type1-encoding-parser = "0.1.1"
 unicode-normalization = "0.1.19"
 cff-parser = "0.2.0"
 log = "0.4.22"
+thiserror = "2.0.19"
 
 [dev-dependencies]
 ureq = "2.6.2"
