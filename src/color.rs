@@ -3,6 +3,7 @@
 //! Text extraction throws colour away, so these are parsed into the shapes the
 //! spec describes and handed to `OutputDev` without ever being converted.
 
+use crate::error::PdfExtractError;
 use crate::function::Function;
 use crate::object::{get, get_contents, maybe_deref, maybe_get_obj};
 use crate::strings::pdf_to_utf8;
@@ -67,67 +68,76 @@ pub enum ColorSpace {
    ICCBased(Vec<u8>),
 }
 
-pub(crate) fn make_colorspace<'a>(doc: &'a Document, name: &[u8], resources: &'a Dictionary) -> ColorSpace {
-   match name {
+/// The entry at `i` of a colour space array. The spec fixes how many entries
+/// each family takes, but the file need not agree.
+fn operand(cs: &[Object], i: usize) -> Result<&Object, PdfExtractError> {
+   cs.get(i)
+      .ok_or_else(|| PdfExtractError::MalformedPdf(format!("colour space array has no entry {}", i)))
+}
+
+fn operand_name(cs: &[Object], i: usize) -> Result<String, PdfExtractError> {
+   Ok(pdf_to_utf8(operand(cs, i)?.as_name()?))
+}
+
+pub(crate) fn make_colorspace<'a>(
+   doc: &'a Document,
+   name: &[u8],
+   resources: &'a Dictionary,
+) -> Result<ColorSpace, PdfExtractError> {
+   Ok(match name {
       b"DeviceGray" => ColorSpace::DeviceGray,
       b"DeviceRGB" => ColorSpace::DeviceRGB,
       b"DeviceCMYK" => ColorSpace::DeviceCMYK,
       b"Pattern" => ColorSpace::Pattern,
       _ => {
-         let colorspaces: &Dictionary = get(doc, resources, b"ColorSpace");
-         let cs: &Object =
-            maybe_get_obj(doc, colorspaces, name).unwrap_or_else(|| panic!("missing colorspace {:?}", name));
+         let colorspaces: &Dictionary = get(doc, resources, b"ColorSpace")?;
+         let cs: &Object = maybe_get_obj(doc, colorspaces, name).ok_or_else(|| {
+            PdfExtractError::MalformedPdf(format!("missing colour space /{}", pdf_to_utf8(name)))
+         })?;
          if let Ok(cs) = cs.as_array() {
-            let cs_name = pdf_to_utf8(cs[0].as_name().expect("first arg must be a name"));
+            let cs_name = operand_name(cs, 0)?;
             match cs_name.as_ref() {
                "Separation" => {
-                  let name = pdf_to_utf8(cs[1].as_name().expect("second arg must be a name"));
-                  let alternate_space = match &maybe_deref(doc, &cs[2]) {
+                  let name = operand_name(cs, 1)?;
+                  let alternate_space = match maybe_deref(doc, operand(cs, 2)?)? {
                      Object::Name(name) => match &name[..] {
                         b"DeviceGray" => AlternateColorSpace::DeviceGray,
                         b"DeviceRGB" => AlternateColorSpace::DeviceRGB,
                         b"DeviceCMYK" => AlternateColorSpace::DeviceCMYK,
-                        _ => panic!("unexpected color space name"),
+                        _ => {
+                           return Err(PdfExtractError::Unsupported(format!(
+                              "alternate colour space /{}",
+                              pdf_to_utf8(name)
+                           )));
+                        }
                      },
                      Object::Array(cs) => {
-                        let cs_name = pdf_to_utf8(cs[0].as_name().expect("first arg must be a name"));
+                        let cs_name = operand_name(cs, 0)?;
                         match cs_name.as_ref() {
                            "ICCBased" => {
-                              let stream = maybe_deref(doc, &cs[1]).as_stream().unwrap();
+                              let stream = maybe_deref(doc, operand(cs, 1)?)?.as_stream()?;
                               // XXX: we're going to be continually decompressing everytime this object is referenced
                               AlternateColorSpace::ICCBased(get_contents(stream))
                            }
-                           "CalGray" => {
-                              let dict = cs[1].as_dict().expect("second arg must be a dict");
-                              AlternateColorSpace::CalGray(CalGray {
-                                 white_point: get(doc, dict, b"WhitePoint"),
-                                 black_point: get(doc, dict, b"BackPoint"),
-                                 gamma: get(doc, dict, b"Gamma"),
-                              })
+                           "CalGray" => AlternateColorSpace::CalGray(cal_gray(doc, operand(cs, 1)?.as_dict()?)?),
+                           "CalRGB" => AlternateColorSpace::CalRGB(cal_rgb(doc, operand(cs, 1)?.as_dict()?)?),
+                           "Lab" => AlternateColorSpace::Lab(lab(doc, operand(cs, 1)?.as_dict()?)?),
+                           _ => {
+                              return Err(PdfExtractError::Unsupported(format!(
+                                 "alternate colour space {}",
+                                 cs_name
+                              )));
                            }
-                           "CalRGB" => {
-                              let dict = cs[1].as_dict().expect("second arg must be a dict");
-                              AlternateColorSpace::CalRGB(CalRGB {
-                                 white_point: get(doc, dict, b"WhitePoint"),
-                                 black_point: get(doc, dict, b"BackPoint"),
-                                 gamma: get(doc, dict, b"Gamma"),
-                                 matrix: get(doc, dict, b"Matrix"),
-                              })
-                           }
-                           "Lab" => {
-                              let dict = cs[1].as_dict().expect("second arg must be a dict");
-                              AlternateColorSpace::Lab(Lab {
-                                 white_point: get(doc, dict, b"WhitePoint"),
-                                 black_point: get(doc, dict, b"BackPoint"),
-                                 range: get(doc, dict, b"Range"),
-                              })
-                           }
-                           _ => panic!("Unexpected color space name"),
                         }
                      }
-                     _ => panic!("Alternate space should be name or array {:?}", cs[2]),
+                     other => {
+                        return Err(PdfExtractError::MalformedPdf(format!(
+                           "an alternate colour space must be a name or an array, found {:?}",
+                           other
+                        )));
+                     }
                   };
-                  let tint_transform = Box::new(Function::new(doc, maybe_deref(doc, &cs[3])));
+                  let tint_transform = Box::new(Function::new(doc, maybe_deref(doc, operand(cs, 3)?)?)?);
 
                   ColorSpace::Separation(Separation {
                      name,
@@ -136,53 +146,60 @@ pub(crate) fn make_colorspace<'a>(doc: &'a Document, name: &[u8], resources: &'a
                   })
                }
                "ICCBased" => {
-                  let stream = maybe_deref(doc, &cs[1]).as_stream().unwrap();
+                  let stream = maybe_deref(doc, operand(cs, 1)?)?.as_stream()?;
                   // XXX: we're going to be continually decompressing everytime this object is referenced
                   ColorSpace::ICCBased(get_contents(stream))
                }
-               "CalGray" => {
-                  let dict = cs[1].as_dict().expect("second arg must be a dict");
-                  ColorSpace::CalGray(CalGray {
-                     white_point: get(doc, dict, b"WhitePoint"),
-                     black_point: get(doc, dict, b"BackPoint"),
-                     gamma: get(doc, dict, b"Gamma"),
-                  })
-               }
-               "CalRGB" => {
-                  let dict = cs[1].as_dict().expect("second arg must be a dict");
-                  ColorSpace::CalRGB(CalRGB {
-                     white_point: get(doc, dict, b"WhitePoint"),
-                     black_point: get(doc, dict, b"BackPoint"),
-                     gamma: get(doc, dict, b"Gamma"),
-                     matrix: get(doc, dict, b"Matrix"),
-                  })
-               }
-               "Lab" => {
-                  let dict = cs[1].as_dict().expect("second arg must be a dict");
-                  ColorSpace::Lab(Lab {
-                     white_point: get(doc, dict, b"WhitePoint"),
-                     black_point: get(doc, dict, b"BackPoint"),
-                     range: get(doc, dict, b"Range"),
-                  })
-               }
+               "CalGray" => ColorSpace::CalGray(cal_gray(doc, operand(cs, 1)?.as_dict()?)?),
+               "CalRGB" => ColorSpace::CalRGB(cal_rgb(doc, operand(cs, 1)?.as_dict()?)?),
+               "Lab" => ColorSpace::Lab(lab(doc, operand(cs, 1)?.as_dict()?)?),
                "Pattern" => ColorSpace::Pattern,
                "DeviceGray" => ColorSpace::DeviceGray,
                "DeviceRGB" => ColorSpace::DeviceRGB,
                "DeviceCMYK" => ColorSpace::DeviceCMYK,
                "DeviceN" => ColorSpace::DeviceN,
                _ => {
-                  panic!("color_space {:?} {:?} {:?}", name, cs_name, cs)
+                  return Err(PdfExtractError::Unsupported(format!("colour space {}", cs_name)));
                }
             }
          } else if let Ok(cs) = cs.as_name() {
             match pdf_to_utf8(cs).as_ref() {
                "DeviceRGB" => ColorSpace::DeviceRGB,
                "DeviceGray" => ColorSpace::DeviceGray,
-               _ => panic!(),
+               other => {
+                  return Err(PdfExtractError::Unsupported(format!("colour space /{}", other)));
+               }
             }
          } else {
-            panic!();
+            return Err(PdfExtractError::MalformedPdf(
+               "a colour space must be a name or an array".to_owned(),
+            ));
          }
       }
-   }
+   })
+}
+
+fn cal_gray(doc: &Document, dict: &Dictionary) -> Result<CalGray, PdfExtractError> {
+   Ok(CalGray {
+      white_point: get(doc, dict, b"WhitePoint")?,
+      black_point: get(doc, dict, b"BackPoint")?,
+      gamma: get(doc, dict, b"Gamma")?,
+   })
+}
+
+fn cal_rgb(doc: &Document, dict: &Dictionary) -> Result<CalRGB, PdfExtractError> {
+   Ok(CalRGB {
+      white_point: get(doc, dict, b"WhitePoint")?,
+      black_point: get(doc, dict, b"BackPoint")?,
+      gamma: get(doc, dict, b"Gamma")?,
+      matrix: get(doc, dict, b"Matrix")?,
+   })
+}
+
+fn lab(doc: &Document, dict: &Dictionary) -> Result<Lab, PdfExtractError> {
+   Ok(Lab {
+      white_point: get(doc, dict, b"WhitePoint")?,
+      black_point: get(doc, dict, b"BackPoint")?,
+      range: get(doc, dict, b"Range")?,
+   })
 }

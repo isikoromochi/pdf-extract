@@ -1,6 +1,7 @@
 //! The geometric vocabulary shared by the content-stream processor and the
 //! output devices: the coordinate space, the page boxes, and paths.
 
+use crate::error::PdfExtractError;
 use euclid::Transform2D;
 
 /// euclid tags a transform with the spaces it maps between. This crate does not
@@ -38,14 +39,16 @@ impl Path {
    pub(crate) fn new() -> Path {
       Path { ops: Vec::new() }
    }
-   pub(crate) fn current_point(&self) -> (f64, f64) {
-      match *self.ops.last().unwrap() {
-         PathOp::MoveTo(x, y) => (x, y),
-         PathOp::LineTo(x, y) => (x, y),
-         PathOp::CurveTo(_, _, _, _, x, y) => (x, y),
-         _ => {
-            panic!()
-         }
+   /// Where the last drawn segment left off. `v` needs it, and a file can name
+   /// `v` with no current point at all.
+   pub(crate) fn current_point(&self) -> Result<(f64, f64), PdfExtractError> {
+      match self.ops.last() {
+         Some(&PathOp::MoveTo(x, y)) => Ok((x, y)),
+         Some(&PathOp::LineTo(x, y)) => Ok((x, y)),
+         Some(&PathOp::CurveTo(_, _, _, _, x, y)) => Ok((x, y)),
+         _ => Err(PdfExtractError::MalformedPdf(
+            "a path operator needs a current point, and the path has none".to_owned(),
+         )),
       }
    }
 }

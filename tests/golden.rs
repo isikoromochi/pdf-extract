@@ -5,7 +5,7 @@
 //! doesn't crash. Regenerate the fixtures with
 //! `python tests/fixtures/generate.py`.
 
-use pdf_extract::{extract_text, extract_text_by_pages};
+use pdf_extract::{PdfExtractError, extract_text, extract_text_by_pages};
 
 fn fixture(name: &str) -> String {
     format!("tests/fixtures/{}.pdf", name)
@@ -70,4 +70,32 @@ fn cyclic_page_parent_terminates() {
     // recurse until the stack runs out. The page draws only a rectangle, so a
     // successful run produces no text.
     assert_eq!(extract_text(fixture("cyclic_page_parent")).unwrap(), "");
+}
+
+#[test]
+fn dangling_reference_is_an_error() {
+    // /F1 points at an object the file does not contain. Corruption like this is
+    // ordinary, and has to arrive as an error the caller can handle rather than
+    // as a panic.
+    let err = extract_text(fixture("dangling_font_reference")).unwrap_err();
+    assert!(
+        matches!(err, PdfExtractError::PdfError(_)),
+        "expected the dangling reference to surface as a PDF error, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn missing_required_entry_is_an_error() {
+    // 32000-1 9.7.4 requires /DescendantFonts on a Type 0 font. Its absence is a
+    // statement about the file, so it should read as one.
+    let err = extract_text(fixture("type0_without_descendants")).unwrap_err();
+    let PdfExtractError::MalformedPdf(message) = &err else {
+        panic!("expected a MalformedPdf error, got {:?}", err);
+    };
+    assert!(
+        message.contains("/DescendantFonts"),
+        "the error should name the entry that is missing: {:?}",
+        message
+    );
 }

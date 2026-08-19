@@ -213,18 +213,22 @@ fn output_doc_inner<'a>(
    output: &mut dyn OutputDev,
    empty_resources: &'a Dictionary,
 ) -> Result<(), PdfExtractError> {
-   let page_dict = doc.get_object(object_id).unwrap().as_dict().unwrap();
+   let page_dict = doc.get_object(object_id)?.as_dict()?;
    // XXX: Some pdfs lack a Resources directory
    let resources = get_inherited(doc, page_dict, b"Resources", 0).unwrap_or(empty_resources);
-   // pdfium searches up the page tree for MediaBoxes as needed
-   let media_box: Vec<f64> = get_inherited(doc, page_dict, b"MediaBox", 0).expect("MediaBox");
+   // pdfium searches up the page tree for MediaBoxes as needed. Asking for
+   // `[f64; 4]` rather than a `Vec` puts the "a rectangle has four numbers"
+   // check in one place instead of at each index.
+   let media_box: [f64; 4] = get_inherited(doc, page_dict, b"MediaBox", 0).ok_or_else(|| {
+      PdfExtractError::MalformedPdf("no /MediaBox on this page or any of its ancestors".to_owned())
+   })?;
    let media_box = MediaBox {
       llx: media_box[0],
       lly: media_box[1],
       urx: media_box[2],
       ury: media_box[3],
    };
-   let art_box = get::<Option<Vec<f64>>>(doc, page_dict, b"ArtBox").map(|x| (x[0], x[1], x[2], x[3]));
+   let art_box = get::<Option<[f64; 4]>>(doc, page_dict, b"ArtBox")?.map(|x| (x[0], x[1], x[2], x[3]));
    output.begin_page(page_num, &media_box, art_box)?;
    p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output, 0)?;
    output.end_page()?;

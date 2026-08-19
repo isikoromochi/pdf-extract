@@ -3,6 +3,7 @@
 //! Only enough of each type is parsed to carry a colour space's tint transform
 //! around; none of them are evaluated, since text extraction discards colour.
 
+use crate::error::PdfExtractError;
 use crate::object::{get, get_contents};
 use log::warn;
 use lopdf::{Document, Object};
@@ -58,29 +59,34 @@ pub(crate) enum Function {
 }
 
 impl Function {
-   pub(crate) fn new(doc: &Document, obj: &Object) -> Function {
+   pub(crate) fn new(doc: &Document, obj: &Object) -> Result<Function, PdfExtractError> {
       let dict = match obj {
          Object::Dictionary(dict) => dict,
          Object::Stream(stream) => &stream.dict,
-         _ => panic!(),
+         _ => {
+            return Err(PdfExtractError::MalformedPdf(
+               "a function must be a dictionary or a stream".to_owned(),
+            ));
+         }
       };
-      let function_type: i64 = get(doc, dict, b"FunctionType");
+      let function_type: i64 = get(doc, dict, b"FunctionType")?;
 
-      match function_type {
+      Ok(match function_type {
          0 => {
             // Sampled function
-            let stream = match obj {
-               Object::Stream(stream) => stream,
-               _ => panic!(),
+            let Object::Stream(stream) = obj else {
+               return Err(PdfExtractError::MalformedPdf(
+                  "a type 0 function must be a stream".to_owned(),
+               ));
             };
-            let range: Vec<f64> = get(doc, dict, b"Range");
-            let domain: Vec<f64> = get(doc, dict, b"Domain");
+            let range: Vec<f64> = get(doc, dict, b"Range")?;
+            let domain: Vec<f64> = get(doc, dict, b"Domain")?;
             let contents = get_contents(stream);
-            let size: Vec<i64> = get(doc, dict, b"Size");
-            let bits_per_sample = get(doc, dict, b"BitsPerSample");
+            let size: Vec<i64> = get(doc, dict, b"Size")?;
+            let bits_per_sample = get(doc, dict, b"BitsPerSample")?;
             // We ignore 'Order' like pdfium, poppler and pdf.js
 
-            let encode = get::<Option<Vec<f64>>>(doc, dict, b"Encode");
+            let encode = get::<Option<Vec<f64>>>(doc, dict, b"Encode")?;
             // maybe there's some better way to write this.
             let encode = encode.unwrap_or_else(|| {
                let mut default = Vec::new();
@@ -89,7 +95,7 @@ impl Function {
                }
                default
             });
-            let decode = get::<Option<Vec<f64>>>(doc, dict, b"Decode").unwrap_or_else(|| range.clone());
+            let decode = get::<Option<Vec<f64>>>(doc, dict, b"Decode")?.unwrap_or_else(|| range.clone());
 
             Function::Type0(Type0Func {
                domain,
@@ -103,9 +109,9 @@ impl Function {
          }
          2 => {
             // Exponential interpolation function
-            let c0 = get::<Option<Vec<f64>>>(doc, dict, b"C0");
-            let c1 = get::<Option<Vec<f64>>>(doc, dict, b"C1");
-            let n = get::<f64>(doc, dict, b"N");
+            let c0 = get::<Option<Vec<f64>>>(doc, dict, b"C0")?;
+            let c1 = get::<Option<Vec<f64>>>(doc, dict, b"C1")?;
+            let n = get::<f64>(doc, dict, b"N")?;
             Function::Type2(Type2Func { c0, c1, n })
          }
          3 => {
@@ -114,22 +120,22 @@ impl Function {
          }
          4 => {
             // PostScript calculator function
-            let contents = match obj {
-               Object::Stream(stream) => {
-                  let contents = get_contents(stream);
-                  warn!("unhandled type-4 function");
-                  warn!("Stream: {}", String::from_utf8(contents.clone()).unwrap());
-                  contents
-               }
-               _ => {
-                  panic!("type 4 functions should be streams")
-               }
+            let Object::Stream(stream) = obj else {
+               return Err(PdfExtractError::MalformedPdf(
+                  "a type 4 function must be a stream".to_owned(),
+               ));
             };
+            let contents = get_contents(stream);
+            warn!("unhandled type-4 function");
+            warn!("Stream: {}", String::from_utf8_lossy(&contents));
             Function::Type4(contents)
          }
          _ => {
-            panic!("unhandled function type {}", function_type)
+            return Err(PdfExtractError::Unsupported(format!(
+               "function type {}",
+               function_type
+            )));
          }
-      }
+      })
    }
 }

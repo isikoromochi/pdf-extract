@@ -9,4 +9,11 @@ pub enum PdfExtractError {
    IoError(#[from] std::io::Error),
    #[error("PDF error: {0}")]
    PdfError(#[from] lopdf::Error),
+   /// The file contradicts what the spec requires at this point: a required
+   /// entry is absent, or a value is not of the type the spec gives it.
+   #[error("Malformed PDF: {0}")]
+   MalformedPdf(String),
+   /// The file is well formed, but uses something this crate does not implement.
+   #[error("Unsupported PDF feature: {0}")]
+   Unsupported(String),
 }
