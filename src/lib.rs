@@ -36,39 +36,7 @@ pub enum PdfExtractError {
    PdfError(#[from] lopdf::Error),
 }
 
-#[allow(dead_code)]
-fn get_info(doc: &Document) -> Option<&Dictionary> {
-   if let Ok(Object::Reference(id)) = doc.trailer.get(b"Info")
-      && let Ok(Object::Dictionary(info)) = doc.get_object(*id)
-   {
-      return Some(info);
-   }
-   None
-}
-
-#[allow(dead_code)]
-fn get_catalog(doc: &Document) -> &Dictionary {
-   if let Object::Reference(id) = doc.trailer.get(b"Root").unwrap()
-      && let Ok(Object::Dictionary(catalog)) = doc.get_object(*id)
-   {
-      return catalog;
-   }
-   panic!();
-}
-
-#[allow(dead_code)]
-fn get_pages(doc: &Document) -> &Dictionary {
-   let catalog = get_catalog(doc);
-   if let Object::Reference(id) = catalog.get(b"Pages").unwrap()
-      && let Ok(Object::Dictionary(pages)) = doc.get_object(*id)
-   {
-      return pages;
-   }
-   panic!();
-}
-
-#[allow(non_upper_case_globals)]
-const PDFDocEncoding: &[u16] = &[
+const PDF_DOC_ENCODING: &[u16] = &[
    0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000a, 0x000b, 0x000c, 0x000d,
    0x000e, 0x000f, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017, 0x02d8, 0x02c7, 0x02c6, 0x02d9,
    0x02dd, 0x02db, 0x02da, 0x02dc, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025, 0x0026, 0x0027, 0x0028, 0x0029,
@@ -98,7 +66,7 @@ fn pdf_to_utf8(s: &[u8]) -> String {
          .iter()
          .copied()
          .flat_map(|x| {
-            let k = PDFDocEncoding[x as usize];
+            let k = PDF_DOC_ENCODING[x as usize];
             vec![(k >> 8) as u8, k as u8].into_iter()
          })
          .collect();
@@ -428,7 +396,7 @@ impl<'a> PdfSimpleFont<'a> {
             let mut table = if let Some(base_encoding) = maybe_get_name(doc, encoding, b"BaseEncoding") {
                encoding_to_unicode_table(base_encoding)
             } else {
-               Vec::from(PDFDocEncoding)
+               Vec::from(PDF_DOC_ENCODING)
             };
             let differences = maybe_get_array(doc, encoding, b"Differences");
             if let Some(differences) = differences {
@@ -501,7 +469,7 @@ impl<'a> PdfSimpleFont<'a> {
          }
          None => {
             if let Some(type1_encoding) = type1_encoding {
-               let mut table = Vec::from(PDFDocEncoding);
+               let mut table = Vec::from(PDF_DOC_ENCODING);
                for (code, name) in type1_encoding {
                   let unicode = glyphnames::name_to_unicode(&pdf_to_utf8(&name));
                   if let Some(unicode) = unicode {
@@ -680,7 +648,7 @@ impl<'a> PdfType3Font<'a> {
             let mut table = if let Some(base_encoding) = maybe_get_name(doc, encoding, b"BaseEncoding") {
                encoding_to_unicode_table(base_encoding)
             } else {
-               Vec::from(PDFDocEncoding)
+               Vec::from(PDF_DOC_ENCODING)
             };
             let differences = maybe_get_array(doc, encoding, b"Differences");
             if let Some(differences) = differences {
@@ -794,6 +762,7 @@ impl<'a> PdfFont for PdfSimpleFont<'a> {
       if let Some(ref unicode_map) = self.unicode_map {
          let s = unicode_map.get(&char);
          let s = match s {
+            Some(s) => s.clone(),
             None => {
                debug!("missing char {:?} in unicode map {:?} for {:?}", char, unicode_map, self.font);
                // some pdf's like http://arxiv.org/pdf/2312.00064v1 are missing entries in their unicode map but do have
@@ -803,11 +772,10 @@ impl<'a> PdfFont for PdfSimpleFont<'a> {
                debug!("falling back to encoding {} -> {:?}", char, s);
                s
             }
-            Some(s) => s.clone(),
          };
          return s;
       }
-      let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDFDocEncoding);
+      let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDF_DOC_ENCODING);
 
       to_utf8(encoding, &slice)
    }
@@ -854,7 +822,7 @@ impl<'a> PdfFont for PdfType3Font<'a> {
          };
          return s;
       }
-      let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDFDocEncoding);
+      let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDF_DOC_ENCODING);
 
       to_utf8(encoding, &slice)
    }
