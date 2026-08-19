@@ -77,6 +77,7 @@ fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
 fn pdf_to_utf8(s: &[u8]) -> String {
    to_utf8(PDF_DOC_ENCODING, s)
 }
+
 fn maybe_deref<'a>(doc: &'a Document, o: &'a Object) -> &'a Object {
    match o {
       &Object::Reference(r) => doc.get_object(r).expect("missing object reference"),
@@ -1621,6 +1622,28 @@ impl<'a> Processor<'a> {
                   panic!("unexpected Tj operand {:?}", operation)
                }
             },
+            // `string '` is `T*` followed by `Tj`. `aw ac string "` is the same with
+            // the word and character spacing set first; those two assignments persist
+            // in the text state rather than applying to this line alone. 32000-1 9.4.3.
+            "'" | "\"" => {
+               let string = if operation.operator == "\"" {
+                  gs.ts.word_spacing = as_num(&operation.operands[0]);
+                  gs.ts.character_spacing = as_num(&operation.operands[1]);
+                  &operation.operands[2]
+               } else {
+                  &operation.operands[0]
+               };
+
+               // T*: move to the start of the next line.
+               tlm = tlm.pre_transform(&Transform2D::create_translation(0., -gs.ts.leading));
+               gs.ts.tm = tlm;
+               output.end_line()?;
+
+               match string {
+                  Object::String(s, _) => show_text(&mut gs, s, &tlm, &flip_ctm, output)?,
+                  other => warn!("unexpected operand for {}: {:?}", operation.operator, other),
+               }
+            }
             "Tc" => {
                gs.ts.character_spacing = as_num(&operation.operands[0]);
             }
@@ -2374,12 +2397,7 @@ pub fn extract_text_from_mem_by_pages_encrypted(buffer: &[u8], password: &str) -
 /// malformed one can make it circular.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
 
-fn get_inherited<'a, T: FromObj<'a>>(
-   doc: &'a Document,
-   dict: &'a Dictionary,
-   key: &[u8],
-   depth: u32,
-) -> Option<T> {
+fn get_inherited<'a, T: FromObj<'a>>(doc: &'a Document, dict: &'a Dictionary, key: &[u8], depth: u32) -> Option<T> {
    let o: Option<T> = get(doc, dict, key);
    if let Some(o) = o {
       return Some(o);

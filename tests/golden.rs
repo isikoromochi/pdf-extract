@@ -44,12 +44,15 @@ fn font_resources_are_scoped_per_page() {
 #[test]
 fn all_text_showing_operators() {
     // Tj, ' (next line and show) and " (set word/char spacing, next line and
-    // show) -- 32000-1 9.4.3. Only Tj is implemented, so the text shown by '
-    // and " is silently dropped.
-    let text = extract_text(fixture("quote_operators")).unwrap();
-    for shown in ["AAA", "BBB", "CCC"] {
-        assert!(text.contains(shown), "{:?} missing from {:?}", shown, text);
-    }
+    // show) -- 32000-1 9.4.3. The fixture shows one string through each.
+    //
+    // The blank line between each pair comes from PlainTextOutput: the fixture
+    // sets 40pt leading on 24pt text, which trips both of its newline rules. It
+    // is a property of the layout heuristics, not of these operators.
+    assert_eq!(
+        extract_text(fixture("quote_operators")).unwrap(),
+        "\n\nAAA\n\nBBB\n\nCCC"
+    );
 }
 
 #[test]
