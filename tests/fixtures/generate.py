@@ -102,3 +102,19 @@ build({
     5: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200]"
               b" /Resources << /XObject << /X1 5 0 R >> >>", b"/X1 Do"),
 }, "self_referencing_xobject.pdf")
+
+
+# --------------------------------------------------------------------------
+# 5. A page whose /Parent points at itself and which carries no /Resources.
+#    /Resources is an inherited attribute (32000-1 7.7.3.4), so resolving it
+#    walks /Parent -- and here that walk never reaches the root. The page draws
+#    a rectangle rather than text so that the missing /Resources is not itself
+#    fatal, leaving the cycle as the only thing under test.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    3: (b"<< /Type /Page /Parent 3 0 R /MediaBox [0 0 200 200]"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"0 0 100 100 re f"),
+}, "cyclic_page_parent.pdf")

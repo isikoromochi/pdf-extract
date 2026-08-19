@@ -1487,6 +1487,11 @@ fn make_colorspace<'a>(doc: &'a Document, name: &[u8], resources: &'a Dictionary
    }
 }
 
+/// Form XObjects nest, and a malformed file can nest them without end -- a form
+/// whose content stream invokes itself is enough. Bound the nesting at the depth
+/// pdfium uses rather than letting it run the stack out.
+const MAX_XOBJECT_DEPTH: u32 = 32;
+
 struct Processor<'a> {
    font_table: HashMap<ObjectId, Rc<dyn PdfFont + 'a>>,
    _none: PhantomData<&'a ()>,
@@ -1507,6 +1512,7 @@ impl<'a> Processor<'a> {
       resources: &'a Dictionary,
       media_box: &MediaBox,
       output: &mut dyn OutputDev,
+      depth: u32,
    ) -> Result<(), PdfExtractError> {
       let content = Content::decode(&content).unwrap();
       let mut gs: GraphicsState = GraphicsState {
@@ -1796,6 +1802,10 @@ impl<'a> Processor<'a> {
             "Do" => {
                // `Do` process an entire subdocument, so we do a recursive call to `process_stream`
                // with the subdocument content and resources
+               if depth >= MAX_XOBJECT_DEPTH {
+                  warn!("skipping XObject nested deeper than {} levels", MAX_XOBJECT_DEPTH);
+                  continue;
+               }
                let xobject: &Dictionary = get(doc, resources, b"XObject");
                let name = operation.operands[0].as_name().unwrap();
                let xf: &Stream = get(doc, xobject, name);
@@ -1803,7 +1813,7 @@ impl<'a> Processor<'a> {
                   .and_then(|n| n.as_dict().ok())
                   .unwrap_or(resources);
                let contents = get_contents(xf);
-               self.process_stream(doc, contents, resources, media_box, output)?;
+               self.process_stream(doc, contents, resources, media_box, output, depth + 1)?;
             }
             _ => {}
          }
@@ -2360,18 +2370,34 @@ pub fn extract_text_from_mem_by_pages_encrypted(buffer: &[u8], password: &str) -
    Ok(v)
 }
 
-fn get_inherited<'a, T: FromObj<'a>>(doc: &'a Document, dict: &'a Dictionary, key: &[u8]) -> Option<T> {
+/// A `/Parent` chain is a handful of levels deep in a well-formed file, but a
+/// malformed one can make it circular.
+const MAX_PAGE_TREE_DEPTH: u32 = 64;
+
+fn get_inherited<'a, T: FromObj<'a>>(
+   doc: &'a Document,
+   dict: &'a Dictionary,
+   key: &[u8],
+   depth: u32,
+) -> Option<T> {
    let o: Option<T> = get(doc, dict, key);
    if let Some(o) = o {
-      Some(o)
-   } else {
-      let parent = dict
-         .get(b"Parent")
-         .and_then(|parent| parent.as_reference())
-         .and_then(|id| doc.get_dictionary(id))
-         .ok()?;
-      get_inherited(doc, parent, key)
+      return Some(o);
    }
+   if depth >= MAX_PAGE_TREE_DEPTH {
+      warn!(
+         "giving up on inherited {:?} after {} levels of /Parent",
+         String::from_utf8_lossy(key),
+         MAX_PAGE_TREE_DEPTH
+      );
+      return None;
+   }
+   let parent = dict
+      .get(b"Parent")
+      .and_then(|parent| parent.as_reference())
+      .and_then(|id| doc.get_dictionary(id))
+      .ok()?;
+   get_inherited(doc, parent, key, depth + 1)
 }
 
 pub fn output_doc_encrypted(
@@ -2425,9 +2451,9 @@ fn output_doc_inner<'a>(
 ) -> Result<(), PdfExtractError> {
    let page_dict = doc.get_object(object_id).unwrap().as_dict().unwrap();
    // XXX: Some pdfs lack a Resources directory
-   let resources = get_inherited(doc, page_dict, b"Resources").unwrap_or(empty_resources);
+   let resources = get_inherited(doc, page_dict, b"Resources", 0).unwrap_or(empty_resources);
    // pdfium searches up the page tree for MediaBoxes as needed
-   let media_box: Vec<f64> = get_inherited(doc, page_dict, b"MediaBox").expect("MediaBox");
+   let media_box: Vec<f64> = get_inherited(doc, page_dict, b"MediaBox", 0).expect("MediaBox");
    let media_box = MediaBox {
       llx: media_box[0],
       lly: media_box[1],
@@ -2436,7 +2462,7 @@ fn output_doc_inner<'a>(
    };
    let art_box = get::<Option<Vec<f64>>>(doc, page_dict, b"ArtBox").map(|x| (x[0], x[1], x[2], x[3]));
    output.begin_page(page_num, &media_box, art_box)?;
-   p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output)?;
+   p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output, 0)?;
    output.end_page()?;
    Ok(())
 }
