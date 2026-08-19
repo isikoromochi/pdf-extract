@@ -1488,7 +1488,7 @@ fn make_colorspace<'a>(doc: &'a Document, name: &[u8], resources: &'a Dictionary
 }
 
 struct Processor<'a> {
-   font_table: HashMap<Vec<u8>, Rc<dyn PdfFont + 'a>>,
+   font_table: HashMap<ObjectId, Rc<dyn PdfFont + 'a>>,
    _none: PhantomData<&'a ()>,
 }
 
@@ -1630,11 +1630,20 @@ impl<'a> Processor<'a> {
             "Tf" => {
                let fonts: &Dictionary = get(doc, resources, b"Font");
                let name = operation.operands[0].as_name().unwrap();
-               let font = self
-                  .font_table
-                  .entry(name.to_owned())
-                  .or_insert_with(|| make_font(doc, get::<&Dictionary>(doc, fonts, name)))
-                  .clone();
+               // Resource names are scoped to the resource dictionary they appear
+               // in (32000-1 7.8.3), so the cache has to be keyed on the identity of
+               // the dictionary a name resolves to. Keyed on the name alone, page 2's
+               // /F1 picks up whatever page 1 called /F1.
+               let font = match fonts.get(name) {
+                  Ok(&Object::Reference(id)) => self
+                     .font_table
+                     .entry(id)
+                     .or_insert_with(|| make_font(doc, get::<&Dictionary>(doc, fonts, name)))
+                     .clone(),
+                  // A font written inline has no object id to key on, and is not
+                  // reachable from any other resource dictionary, so skip the cache.
+                  _ => make_font(doc, get::<&Dictionary>(doc, fonts, name)),
+               };
                {
                   /*let file = font.get_descriptor().and_then(|desc| desc.get_file());
                   if let Some(file) = file {
