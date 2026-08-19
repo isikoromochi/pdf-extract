@@ -58,22 +58,6 @@ const PDF_DOC_ENCODING: &[u16] = &[
    0x00fc, 0x00fd, 0x00fe, 0x00ff,
 ];
 
-fn pdf_to_utf8(s: &[u8]) -> String {
-   if s.len() > 2 && s[0] == 0xfe && s[1] == 0xff {
-      UTF_16BE.decode_without_bom_handling_and_without_replacement(&s[2..]).unwrap().to_string()
-   } else {
-      let r: Vec<u8> = s
-         .iter()
-         .copied()
-         .flat_map(|x| {
-            let k = PDF_DOC_ENCODING[x as usize];
-            vec![(k >> 8) as u8, k as u8].into_iter()
-         })
-         .collect();
-      UTF_16BE.decode_without_bom_handling_and_without_replacement(&r).unwrap().to_string()
-   }
-}
-
 fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
    if s.len() > 2 && s[0] == 0xfe && s[1] == 0xff {
       UTF_16BE.decode_without_bom_handling_and_without_replacement(&s[2..]).unwrap().to_string()
@@ -90,6 +74,9 @@ fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
    }
 }
 
+fn pdf_to_utf8(s: &[u8]) -> String {
+   to_utf8(PDF_DOC_ENCODING, s)
+}
 fn maybe_deref<'a>(doc: &'a Document, o: &'a Object) -> &'a Object {
    match o {
       &Object::Reference(r) => doc.get_object(r).expect("missing object reference"),
