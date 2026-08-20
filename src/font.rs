@@ -97,7 +97,7 @@ fn encoding_to_unicode_table(name: &[u8]) -> Result<Vec<u16>, PdfExtractError> {
       .map(|x| {
          if let &Some(x) = x {
             // The names in our own encoding tables are all in the glyph list.
-            glyphnames::name_to_unicode(x).expect("a built-in encoding names an unknown glyph")
+            glyphnames::name_to_unicode(x).expect(CORE_METRICS_GLYPH)
          } else {
             0
          }
@@ -125,7 +125,12 @@ impl<'a> PdfSimpleFont<'a> {
             let file = maybe_get_obj(doc, descriptor, b"FontFile");
             if let Some(Object::Stream(s)) = file {
                let s = get_contents(s);
-               type1_encoding = Some(type1_encoding_parser::get_encoding_map(&s).expect("encoding"));
+               // The built-in encoding is one source among several; a font
+               // program we cannot read is not a reason to give up on the page.
+               match type1_encoding_parser::get_encoding_map(&s) {
+                  Ok(map) => type1_encoding = Some(map),
+                  Err(_) => warn!("could not read the encoding from the embedded Type 1 program"),
+               }
             }
          } else if subtype == "TrueType" {
             let file = maybe_get_obj(doc, descriptor, b"FontFile2");
@@ -140,30 +145,32 @@ impl<'a> PdfSimpleFont<'a> {
             let subtype = get_name_string(doc, &s.dict, b"Subtype")?;
             let s = get_contents(s);
             if subtype == "Type1C" {
-               let table = cff_parser::Table::parse(&s).unwrap();
-               //use std::io::Write;
-               //File::create(format!("/tmp/{}", base_name)).unwrap().write_all(&s);
+               match cff_parser::Table::parse(&s) {
+                  Some(table) => {
+                     let encoding = table.encoding.get_code_to_sid_table(&table.charset);
 
-               let encoding = table.encoding.get_code_to_sid_table(&table.charset);
-
-               let mapping: HashMap<u32, String> = encoding
-                  .into_iter()
-                  .filter_map(|(cid, sid)| {
-                     let name = cff_parser::string_by_id(&table, sid).unwrap();
-                     if name == ".notdef" {
-                        return None;
-                     }
-                     let unicode = glyphnames::name_to_unicode(name)
-                        .or_else(|| zapfglyphnames::zapfdigbats_names_to_unicode(name));
-                     if unicode.is_none() {
-                        warn!("Couldn't find unicode for {}", name);
-                        return None;
-                     }
-                     let str = String::from_utf16(&[unicode.unwrap()]).unwrap();
-                     Some((cid as u32, str))
-                  })
-                  .collect();
-               unicode_map = Some(mapping);
+                     let mapping: HashMap<u32, String> = encoding
+                        .into_iter()
+                        .filter_map(|(cid, sid)| {
+                           let name = cff_parser::string_by_id(&table, sid)?;
+                           if name == ".notdef" {
+                              return None;
+                           }
+                           let unicode = glyphnames::name_to_unicode(name)
+                              .or_else(|| zapfglyphnames::zapfdigbats_names_to_unicode(name));
+                           let Some(unicode) = unicode else {
+                              warn!("Couldn't find unicode for {}", name);
+                              return None;
+                           };
+                           Some((cid as u32, String::from_utf16(&[unicode]).ok()?))
+                        })
+                        .collect();
+                     unicode_map = Some(mapping);
+                  }
+                  // As above: a font program we cannot read costs us this one
+                  // source of glyph names, not the page.
+                  None => warn!("could not parse the embedded CFF font program"),
+               }
             }
 
             //
@@ -213,27 +220,19 @@ impl<'a> PdfSimpleFont<'a> {
                         if let Some(unicode) = unicode {
                            table[code as usize] = unicode;
                            if let Some(ref mut unicode_map) = unicode_map {
-                              let be = [unicode];
-                              match unicode_map.entry(code as u32) {
-                                 // If there's a unicode table entry missing use one based on the name
-                                 Entry::Vacant(v) => {
-                                    v.insert(String::from_utf16(&be).unwrap());
-                                 }
-                                 Entry::Occupied(e) => {
-                                    if e.get() != &String::from_utf16(&be).unwrap() {
-                                       let normal_match = e.get().nfkc().eq(String::from_utf16(&be).unwrap().nfkc());
-                                       if !normal_match {
-                                          warn!(
-                                             "Unicode mismatch {} {} {:?} {:?} {:?}",
-                                             normal_match,
-                                             name,
-                                             e.get(),
-                                             String::from_utf16(&be),
-                                             be
-                                          );
+                              match String::from_utf16(&[unicode]) {
+                                 Err(_) => warn!("glyph name '{}' maps to an unpaired surrogate", name),
+                                 Ok(mapped) => match unicode_map.entry(code as u32) {
+                                    // If there's a unicode table entry missing use one based on the name
+                                    Entry::Vacant(v) => {
+                                       v.insert(mapped);
+                                    }
+                                    Entry::Occupied(e) => {
+                                       if e.get() != &mapped && !e.get().nfkc().eq(mapped.nfkc()) {
+                                          warn!("Unicode mismatch for {}: {:?} vs {:?}", name, e.get(), mapped);
                                        }
                                     }
-                                 }
+                                 },
                               }
                            }
                         } else {
@@ -245,9 +244,9 @@ impl<'a> PdfSimpleFont<'a> {
                                     Entry::Vacant(v) => {
                                        v.insert("".to_owned());
                                     }
-                                    Entry::Occupied(_e) => {
-                                       panic!("unexpected entry in unicode map")
-                                    }
+                                    // Anything already mapped came from
+                                    // /ToUnicode, which beats the empty string.
+                                    Entry::Occupied(_) => {}
                                  }
                               }
                               _ => {
@@ -258,7 +257,10 @@ impl<'a> PdfSimpleFont<'a> {
                         code += 1;
                      }
                      _ => {
-                        panic!("wrong type {:?}", o);
+                        return Err(PdfExtractError::MalformedPdf(format!(
+                           "/Differences entries must be integers or names, found {:?}",
+                           o
+                        )));
                      }
                   }
                }
@@ -281,7 +283,7 @@ impl<'a> PdfSimpleFont<'a> {
                      .iter()
                      .map(|x| {
                         if let &Some(x) = x {
-                           glyphnames::name_to_unicode(x).unwrap()
+                           glyphnames::name_to_unicode(x).expect(CORE_METRICS_GLYPH)
                         } else {
                            0
                         }
@@ -538,9 +540,9 @@ impl<'a> Iterator for PdfFontIter<'a> {
 }
 
 pub(crate) trait PdfFont: Debug {
-   fn get_width(&self, id: CharCode) -> f64;
+   fn get_width(&self, id: CharCode) -> Result<f64, PdfExtractError>;
    fn next_char(&self, iter: &mut Iter<u8>) -> Option<(CharCode, u8)>;
-   fn decode_char(&self, char: CharCode) -> String;
+   fn decode_char(&self, char: CharCode) -> Result<String, PdfExtractError>;
 
    /*fn char_codes<'a>(&'a self, chars: &'a [u8]) -> PdfFontIter {
        let p = self;
@@ -558,15 +560,8 @@ impl<'a> dyn PdfFont + 'a {
 }
 
 impl<'a> PdfFont for PdfSimpleFont<'a> {
-   fn get_width(&self, id: CharCode) -> f64 {
-      let width = self.widths.get(&id);
-      if let Some(width) = width {
-         *width
-      } else {
-         let mut widths = self.widths.iter().collect::<Vec<_>>();
-         widths.sort_by_key(|x| x.0);
-         self.missing_width
-      }
+   fn get_width(&self, id: CharCode) -> Result<f64, PdfExtractError> {
+      Ok(*self.widths.get(&id).unwrap_or(&self.missing_width))
    }
    /*fn decode(&self, chars: &[u8]) -> String {
        let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(&PDFDocEncoding);
@@ -576,27 +571,28 @@ impl<'a> PdfFont for PdfSimpleFont<'a> {
    fn next_char(&self, iter: &mut Iter<u8>) -> Option<(CharCode, u8)> {
       iter.next().map(|x| (*x as CharCode, 1))
    }
-   fn decode_char(&self, char: CharCode) -> String {
+   fn decode_char(&self, char: CharCode) -> Result<String, PdfExtractError> {
       let slice = [char as u8];
       if let Some(ref unicode_map) = self.unicode_map {
-         let s = unicode_map.get(&char);
-         let s = match s {
-            Some(s) => s.clone(),
-            None => {
-               debug!("missing char {:?} in unicode map {:?} for {:?}", char, unicode_map, self.font);
-               // some pdf's like http://arxiv.org/pdf/2312.00064v1 are missing entries in their unicode map but do have
-               // entries in the encoding.
-               let encoding = self.encoding.as_ref().map(|x| &x[..]).expect("missing unicode map and encoding");
-               let s = to_utf8(encoding, &slice);
-               debug!("falling back to encoding {} -> {:?}", char, s);
-               s
-            }
-         };
-         return s;
+         if let Some(s) = unicode_map.get(&char) {
+            return Ok(s.clone());
+         }
+         debug!("missing char {:?} in unicode map {:?} for {:?}", char, unicode_map, self.font);
+         // some pdf's like http://arxiv.org/pdf/2312.00064v1 are missing entries in their unicode map but do have
+         // entries in the encoding.
+         let encoding = self.encoding.as_ref().map(|x| &x[..]).ok_or_else(|| {
+            PdfExtractError::MalformedPdf(format!(
+               "code {} is in neither the /ToUnicode map nor an /Encoding",
+               char
+            ))
+         })?;
+         let s = to_utf8(encoding, &slice);
+         debug!("falling back to encoding {} -> {:?}", char, s);
+         return Ok(s);
       }
       let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDF_DOC_ENCODING);
 
-      to_utf8(encoding, &slice)
+      Ok(to_utf8(encoding, &slice))
    }
 }
 
@@ -607,13 +603,10 @@ impl<'a> fmt::Debug for PdfSimpleFont<'a> {
 }
 
 impl<'a> PdfFont for PdfType3Font<'a> {
-   fn get_width(&self, id: CharCode) -> f64 {
-      let width = self.widths.get(&id);
-      if let Some(width) = width {
-         *width
-      } else {
-         panic!("missing width for {} {:?}", id, self.font);
-      }
+   fn get_width(&self, id: CharCode) -> Result<f64, PdfExtractError> {
+      self.widths.get(&id).copied().ok_or_else(|| {
+         PdfExtractError::MalformedPdf(format!("a Type 3 font has no /Widths entry for code {}", id))
+      })
    }
    /*fn decode(&self, chars: &[u8]) -> String {
        let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(&PDFDocEncoding);
@@ -623,27 +616,28 @@ impl<'a> PdfFont for PdfType3Font<'a> {
    fn next_char(&self, iter: &mut Iter<u8>) -> Option<(CharCode, u8)> {
       iter.next().map(|x| (*x as CharCode, 1))
    }
-   fn decode_char(&self, char: CharCode) -> String {
+   fn decode_char(&self, char: CharCode) -> Result<String, PdfExtractError> {
       let slice = [char as u8];
       if let Some(ref unicode_map) = self.unicode_map {
-         let s = unicode_map.get(&char);
-         let s = match s {
-            None => {
-               debug!("missing char {:?} in unicode map {:?} for {:?}", char, unicode_map, self.font);
-               // some pdf's like http://arxiv.org/pdf/2312.00577v1 are missing entries in their unicode map but do have
-               // entries in the encoding.
-               let encoding = self.encoding.as_ref().map(|x| &x[..]).expect("missing unicode map and encoding");
-               let s = to_utf8(encoding, &slice);
-               debug!("falling back to encoding {} -> {:?}", char, s);
-               s
-            }
-            Some(s) => s.clone(),
-         };
-         return s;
+         if let Some(s) = unicode_map.get(&char) {
+            return Ok(s.clone());
+         }
+         debug!("missing char {:?} in unicode map {:?} for {:?}", char, unicode_map, self.font);
+         // some pdf's like http://arxiv.org/pdf/2312.00577v1 are missing entries in their unicode map but do have
+         // entries in the encoding.
+         let encoding = self.encoding.as_ref().map(|x| &x[..]).ok_or_else(|| {
+            PdfExtractError::MalformedPdf(format!(
+               "code {} is in neither the /ToUnicode map nor an /Encoding",
+               char
+            ))
+         })?;
+         let s = to_utf8(encoding, &slice);
+         debug!("falling back to encoding {} -> {:?}", char, s);
+         return Ok(s);
       }
       let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(PDF_DOC_ENCODING);
 
-      to_utf8(encoding, &slice)
+      Ok(to_utf8(encoding, &slice))
    }
 }
 
@@ -661,7 +655,8 @@ struct PdfCIDFont<'a> {
    encoding: ByteMapping,
    to_unicode: Option<HashMap<u32, String>>,
    widths: HashMap<CharCode, f64>, // should probably just use i32 here
-   default_width: Option<f64>,     // only used for CID fonts and we should probably brake out the different font types
+   /// /DW, defaulting to 1000 (32000-1 9.7.4.3).
+   default_width: f64,
 }
 
 fn get_unicode_map<'a>(
@@ -810,19 +805,14 @@ impl<'a> PdfCIDFont<'a> {
          widths,
          to_unicode: unicode_map,
          encoding,
-         default_width: Some(default_width as f64),
+         default_width: default_width as f64,
       })
    }
 }
 
 impl<'a> PdfFont for PdfCIDFont<'a> {
-   fn get_width(&self, id: CharCode) -> f64 {
-      let width = self.widths.get(&id);
-      if let Some(width) = width {
-         *width
-      } else {
-         self.default_width.unwrap()
-      }
+   fn get_width(&self, id: CharCode) -> Result<f64, PdfExtractError> {
+      Ok(*self.widths.get(&id).unwrap_or(&self.default_width))
    } /*
    pub(crate) fn decode(&self, chars: &[u8]) -> String {
    self.char_codes(chars);
@@ -854,9 +844,8 @@ impl<'a> PdfFont for PdfCIDFont<'a> {
       }
       None
    }
-   fn decode_char(&self, char: CharCode) -> String {
-      let s = self.to_unicode.as_ref().and_then(|x| x.get(&char));
-      if let Some(s) = s { s.clone() } else { "".to_string() }
+   fn decode_char(&self, char: CharCode) -> Result<String, PdfExtractError> {
+      Ok(self.to_unicode.as_ref().and_then(|x| x.get(&char)).cloned().unwrap_or_default())
    }
 }
 

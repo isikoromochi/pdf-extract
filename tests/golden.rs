@@ -99,3 +99,19 @@ fn missing_required_entry_is_an_error() {
         message
     );
 }
+
+#[test]
+fn missing_type3_width_is_an_error() {
+    // The font's /Widths covers code 65 and the page shows code 66. A Type 3
+    // font carries no metrics of its own to fall back on, so the gap reaches
+    // the caller through PdfFont::get_width rather than aborting.
+    let err = extract_text(fixture("type3_missing_width")).unwrap_err();
+    let PdfExtractError::MalformedPdf(message) = &err else {
+        panic!("expected a MalformedPdf error, got {:?}", err);
+    };
+    assert!(
+        message.contains("/Widths"),
+        "the error should say which table came up short: {:?}",
+        message
+    );
+}

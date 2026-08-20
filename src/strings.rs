@@ -4,6 +4,7 @@
 //! PDFDocEncoding (32000-1 7.9.2.2, and Annex D.2 for the table itself).
 
 use encoding_rs::UTF_16BE;
+use log::warn;
 
 pub(crate) const PDF_DOC_ENCODING: &[u16] = &[
    0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000a, 0x000b, 0x000c, 0x000d,
@@ -27,9 +28,22 @@ pub(crate) const PDF_DOC_ENCODING: &[u16] = &[
    0x00fc, 0x00fd, 0x00fe, 0x00ff,
 ];
 
+/// UTF-16BE that a file may have got wrong. Unpaired surrogates cannot be put
+/// in a Rust string, so substitute replacement characters rather than losing
+/// the whole string over one bad code unit.
+fn utf_16be_to_string(bytes: &[u8]) -> String {
+   match UTF_16BE.decode_without_bom_handling_and_without_replacement(bytes) {
+      Some(s) => s.to_string(),
+      None => {
+         warn!("a PDF string holds unpaired UTF-16 surrogates; substituting replacement characters");
+         UTF_16BE.decode_without_bom_handling(bytes).0.to_string()
+      }
+   }
+}
+
 pub(crate) fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
    if s.len() > 2 && s[0] == 0xfe && s[1] == 0xff {
-      UTF_16BE.decode_without_bom_handling_and_without_replacement(&s[2..]).unwrap().to_string()
+      utf_16be_to_string(&s[2..])
    } else {
       let r: Vec<u8> = s
          .iter()
@@ -39,7 +53,7 @@ pub(crate) fn to_utf8(encoding: &[u16], s: &[u8]) -> String {
             vec![(k >> 8) as u8, k as u8].into_iter()
          })
          .collect();
-      UTF_16BE.decode_without_bom_handling_and_without_replacement(&r).unwrap().to_string()
+      utf_16be_to_string(&r)
    }
 }
 

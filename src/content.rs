@@ -65,7 +65,7 @@ fn show_text(
       let trm = tsm.post_transform(&ts.tm.post_transform(&gs.ctm));
       // 5.9 Extraction of Text Content
 
-      let w0 = font.get_width(c) / 1000.;
+      let w0 = font.get_width(c)? / 1000.;
 
       let mut spacing = ts.character_spacing;
       // "Word spacing is applied to every occurrence of the single-byte character code 32 in a
@@ -77,7 +77,7 @@ fn show_text(
          spacing += ts.word_spacing
       }
 
-      output.output_character(&trm, w0, spacing, ts.font_size, &font.decode_char(c))?;
+      output.output_character(&trm, w0, spacing, ts.font_size, &font.decode_char(c)?)?;
       let tj = 0.;
       let ty = 0.;
       let tx = ts.horizontal_scaling * ((w0 - tj / 1000.) * ts.font_size + spacing);

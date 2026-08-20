@@ -147,3 +147,21 @@ build({
     5: (b"<< /Type /Font /Subtype /Type0 /BaseFont /Whatever"
         b" /Encoding /Identity-H >>"),
 }, "type0_without_descendants.pdf")
+
+
+# --------------------------------------------------------------------------
+# 8. A Type 3 font whose /Widths covers only code 65, on a page that shows code
+#    66. A glyph with no width is a statement about the file, and reaches the
+#    caller through PdfFont::get_width.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"BT /F1 24 Tf 20 100 Td (B) Tj ET"),
+    5: (b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 100 100]"
+        b" /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << >>"
+        b" /Encoding << /Type /Encoding /Differences [65 /A] >>"
+        b" /FirstChar 65 /LastChar 65 /Widths [500] >>"),
+}, "type3_missing_width.pdf")
