@@ -95,73 +95,69 @@ pub fn extract_text_from_mem_encrypted(buffer: &[u8], password: &str) -> Result<
    Ok(s)
 }
 
-fn extract_text_by_page(doc: &Document, page_num: u32) -> Result<String, PdfExtractError> {
-   let mut s = String::new();
-   {
-      let mut output = PlainTextOutput::new(&mut s);
-      output_doc_page(doc, &mut output, page_num)?;
+/// The text of every page of `doc`, in page order, one entry per page.
+///
+/// Damage is normally confined to the page that carries it, so a page that
+/// cannot be extracted costs its own text and nothing more: its entry is the
+/// empty string and the reason goes to the log, which is the only place a
+/// `String` leaves for it. Partial output from a page that failed part way
+/// through is dropped, so an entry is either a whole page or nothing.
+///
+/// One `Processor` serves every page, so a font shared between pages is built
+/// once, and the page tree is walked once rather than once per page.
+fn extract_text_by_pages_inner(doc: &Document) -> Vec<String> {
+   let empty_resources = Dictionary::new();
+   let mut p = Processor::new();
+   let mut pages = Vec::new();
+   for (page_num, object_id) in doc.get_pages() {
+      let mut s = String::new();
+      {
+         let mut output = PlainTextOutput::new(&mut s);
+         if let Err(e) = output_doc_inner(page_num, object_id, doc, &mut p, &mut output, &empty_resources) {
+            error!("page {} could not be extracted, leaving it empty: {}", page_num, e);
+            s.clear();
+         }
+      }
+      pages.push(s);
    }
-   Ok(s)
+   pages
 }
 
 /// Extract the text from a pdf at `path` and return a `Vec<String>` with the results separately by page
+///
+/// There is one entry per page, in page order. Damage is normally confined to
+/// the page that carries it, so a page that cannot be extracted costs its own
+/// text and nothing more: its entry is the empty string, and the reason it
+/// failed is logged at error level. The `Err` case is reserved for what stops
+/// the whole document -- a file that will not load, or will not decrypt.
 pub fn extract_text_by_pages<P: std::convert::AsRef<std::path::Path>>(path: P) -> Result<Vec<String>, PdfExtractError> {
-   let mut v = Vec::new();
-   {
-      let mut doc = Document::load(path)?;
-      maybe_decrypt(&mut doc)?;
-      let mut page_num = 1;
-      while let Ok(content) = extract_text_by_page(&doc, page_num) {
-         v.push(content);
-         page_num += 1;
-      }
-   }
-   Ok(v)
+   let mut doc = Document::load(path)?;
+   maybe_decrypt(&mut doc)?;
+   Ok(extract_text_by_pages_inner(&doc))
 }
 
+/// As [`extract_text_by_pages`], for a document encrypted with `password`.
 pub fn extract_text_by_pages_encrypted<P: std::convert::AsRef<std::path::Path>>(
    path: P,
    password: &str,
 ) -> Result<Vec<String>, PdfExtractError> {
-   let mut v = Vec::new();
-   {
-      let mut doc = Document::load(path)?;
-      doc.decrypt(password)?;
-      let mut page_num = 1;
-      while let Ok(content) = extract_text_by_page(&doc, page_num) {
-         v.push(content);
-         page_num += 1;
-      }
-   }
-   Ok(v)
+   let mut doc = Document::load(path)?;
+   doc.decrypt(password)?;
+   Ok(extract_text_by_pages_inner(&doc))
 }
 
+/// As [`extract_text_by_pages`], reading the document from memory.
 pub fn extract_text_from_mem_by_pages(buffer: &[u8]) -> Result<Vec<String>, PdfExtractError> {
-   let mut v = Vec::new();
-   {
-      let mut doc = Document::load_mem(buffer)?;
-      maybe_decrypt(&mut doc)?;
-      let mut page_num = 1;
-      while let Ok(content) = extract_text_by_page(&doc, page_num) {
-         v.push(content);
-         page_num += 1;
-      }
-   }
-   Ok(v)
+   let mut doc = Document::load_mem(buffer)?;
+   maybe_decrypt(&mut doc)?;
+   Ok(extract_text_by_pages_inner(&doc))
 }
 
+/// As [`extract_text_by_pages`], reading an encrypted document from memory.
 pub fn extract_text_from_mem_by_pages_encrypted(buffer: &[u8], password: &str) -> Result<Vec<String>, PdfExtractError> {
-   let mut v = Vec::new();
-   {
-      let mut doc = Document::load_mem(buffer)?;
-      doc.decrypt(password)?;
-      let mut page_num = 1;
-      while let Ok(content) = extract_text_by_page(&doc, page_num) {
-         v.push(content);
-         page_num += 1;
-      }
-   }
-   Ok(v)
+   let mut doc = Document::load_mem(buffer)?;
+   doc.decrypt(password)?;
+   Ok(extract_text_by_pages_inner(&doc))
 }
 
 pub fn output_doc_encrypted(

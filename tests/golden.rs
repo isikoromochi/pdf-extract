@@ -137,3 +137,19 @@ fn type3_differences_outside_the_encoding_table_are_ignored() {
         "\n\n\u{2020}"
     );
 }
+
+#[test]
+fn a_broken_page_does_not_end_the_run() {
+    // Page 2 points /F1 at an object the file does not contain. Reading that
+    // error as "the document has no more pages" used to return page 1 alone,
+    // inside an `Ok` that gave the caller no hint anything was missing.
+    // Each page now gets an entry, and the damaged one is empty.
+    assert_eq!(
+        extract_text_by_pages(fixture("broken_middle_page")).unwrap(),
+        vec![
+            "\n\nPAGE-ONE".to_string(),
+            String::new(),
+            "\n\nPAGE-THREE".to_string()
+        ]
+    );
+}

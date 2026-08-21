@@ -202,3 +202,26 @@ build({
         b" /Differences [300 /bullet -1 /daggerdbl 65 /dagger] >>"
         b" /FirstChar 65 /LastChar 65 /Widths [500] >>"),
 }, "type3_differences_out_of_range.pdf")
+
+
+# --------------------------------------------------------------------------
+# 11. Three pages, the middle one pointing /F1 at an object the file does not
+#     contain. Damage is normally confined to the page carrying it, so the two
+#     intact pages have to survive it -- and the run must not be cut short at
+#     the damaged page, which is what reading an error as "no more pages" did.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: (b"<< /Type /Pages /Kids [3 0 R 6 0 R 8 0 R] /Count 3"
+        b" /MediaBox [0 0 200 200] >>"),
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"BT /F1 24 Tf 20 100 Td (PAGE-ONE) Tj ET"),
+    5: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    6: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 99 0 R >> >>"
+        b" /Contents 7 0 R >>"),
+    7: stream(b"", b"BT /F1 24 Tf 20 100 Td (PAGE-TWO) Tj ET"),
+    8: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 9 0 R >>"),
+    9: stream(b"", b"BT /F1 24 Tf 20 100 Td (PAGE-THREE) Tj ET"),
+}, "broken_middle_page.pdf")
