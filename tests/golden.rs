@@ -115,3 +115,25 @@ fn missing_type3_width_is_an_error() {
         message
     );
 }
+
+#[test]
+fn differences_outside_the_encoding_table_are_ignored() {
+    // /Differences names code 300 and code -1, neither of which a simple font
+    // can show: its codes are single bytes (32000-1 9.6.6.1). Both used to be
+    // written straight into a 256-entry table, so the file panicked rather than
+    // extracting. The in-range entry -- 65 to /dagger -- still has to apply.
+    assert_eq!(
+        extract_text(fixture("differences_out_of_range")).unwrap(),
+        "\n\n\u{2020}"
+    );
+}
+
+#[test]
+fn type3_differences_outside_the_encoding_table_are_ignored() {
+    // As above, on a Type 3 font: it builds its encoding table through its own
+    // path, so it needs its own bounds check and its own regression test.
+    assert_eq!(
+        extract_text(fixture("type3_differences_out_of_range")).unwrap(),
+        "\n\n\u{2020}"
+    );
+}

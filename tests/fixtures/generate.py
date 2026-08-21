@@ -165,3 +165,40 @@ build({
         b" /Encoding << /Type /Encoding /Differences [65 /A] >>"
         b" /FirstChar 65 /LastChar 65 /Widths [500] >>"),
 }, "type3_missing_width.pdf")
+
+
+# --------------------------------------------------------------------------
+# 9. /Differences entries whose codes are not single-byte codes: one past the
+#    end of the encoding table and one negative. A simple font can only ever
+#    show codes 0..255 (32000-1 9.6.6.1), so neither entry is reachable -- but
+#    both used to index straight into a 256-entry table. The third entry is in
+#    range, and has to survive its neighbours.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"BT /F1 24 Tf 20 100 Td (A) Tj ET"),
+    5: (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding"
+        b" << /Type /Encoding"
+        b" /Differences [300 /bullet -1 /daggerdbl 65 /dagger] >> >>"),
+}, "differences_out_of_range.pdf")
+
+
+# --------------------------------------------------------------------------
+# 10. The same out-of-range /Differences codes on a Type 3 font, which builds
+#     its encoding table through a separate path from a simple font's.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"BT /F1 24 Tf 20 100 Td (A) Tj ET"),
+    5: (b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 100 100]"
+        b" /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << >>"
+        b" /Encoding << /Type /Encoding"
+        b" /Differences [300 /bullet -1 /daggerdbl 65 /dagger] >>"
+        b" /FirstChar 65 /LastChar 65 /Widths [500] >>"),
+}, "type3_differences_out_of_range.pdf")

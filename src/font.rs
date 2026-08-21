@@ -105,6 +105,18 @@ fn encoding_to_unicode_table(name: &[u8]) -> Result<Vec<u16>, PdfExtractError> {
       .collect())
 }
 
+/// Where `code` lands in an encoding table, if it lands in it at all.
+///
+/// The codes a simple or Type 3 font can show are single bytes (32000-1 9.6.6.1),
+/// so an encoding table has one entry per byte value. A file is free to write a
+/// /Differences entry outside that range anyway -- and an embedded font program
+/// is free to encode one -- but no text-showing operator can select the result,
+/// so the entry is unusable rather than fatal. Skip it instead of indexing past
+/// the end of the table.
+fn encoding_slot(table: &[u16], code: i64) -> Option<usize> {
+   usize::try_from(code).ok().filter(|&slot| slot < table.len())
+}
+
 /* "Glyphs in the font are selected by single-byte character codes obtained from a string that
     is shown by the text-showing operators. Logically, these codes index into a table of 256
     glyphs; the mapping from codes to glyphs is called the font’s encoding. Each font program
@@ -214,43 +226,54 @@ impl<'a> PdfSimpleFont<'a> {
                      }
                      Object::Name(ref n) => {
                         let name = pdf_to_utf8(n);
-                        // XXX: names of Type1 fonts can map to arbitrary strings instead of real
-                        // unicode names, so we should probably handle this differently
-                        let unicode = glyphnames::name_to_unicode(&name);
-                        if let Some(unicode) = unicode {
-                           table[code as usize] = unicode;
-                           if let Some(ref mut unicode_map) = unicode_map {
-                              match String::from_utf16(&[unicode]) {
-                                 Err(_) => warn!("glyph name '{}' maps to an unpaired surrogate", name),
-                                 Ok(mapped) => match unicode_map.entry(code as u32) {
-                                    // If there's a unicode table entry missing use one based on the name
-                                    Entry::Vacant(v) => {
-                                       v.insert(mapped);
+                        match encoding_slot(&table, code) {
+                           None => {
+                              warn!(
+                                 "/Differences gives code {} to glyph '{}' for font {}, which is not a \
+                                  single-byte code; ignoring it",
+                                 code, name, base_name
+                              );
+                           }
+                           Some(slot) => {
+                              // XXX: names of Type1 fonts can map to arbitrary strings instead of real
+                              // unicode names, so we should probably handle this differently
+                              let unicode = glyphnames::name_to_unicode(&name);
+                              if let Some(unicode) = unicode {
+                                 table[slot] = unicode;
+                                 if let Some(ref mut unicode_map) = unicode_map {
+                                    match String::from_utf16(&[unicode]) {
+                                       Err(_) => warn!("glyph name '{}' maps to an unpaired surrogate", name),
+                                       Ok(mapped) => match unicode_map.entry(slot as u32) {
+                                          // If there's a unicode table entry missing use one based on the name
+                                          Entry::Vacant(v) => {
+                                             v.insert(mapped);
+                                          }
+                                          Entry::Occupied(e) => {
+                                             if e.get() != &mapped && !e.get().nfkc().eq(mapped.nfkc()) {
+                                                warn!("Unicode mismatch for {}: {:?} vs {:?}", name, e.get(), mapped);
+                                             }
+                                          }
+                                       },
                                     }
-                                    Entry::Occupied(e) => {
-                                       if e.get() != &mapped && !e.get().nfkc().eq(mapped.nfkc()) {
-                                          warn!("Unicode mismatch for {}: {:?} vs {:?}", name, e.get(), mapped);
+                                 }
+                              } else {
+                                 match unicode_map {
+                                    Some(ref mut unicode_map) if base_name.contains("FontAwesome") => {
+                                       // the fontawesome tex package will use glyph names that don't have a corresponding unicode
+                                       // code point, so we'll use an empty string instead. See issue #76
+                                       match unicode_map.entry(slot as u32) {
+                                          Entry::Vacant(v) => {
+                                             v.insert("".to_owned());
+                                          }
+                                          // Anything already mapped came from
+                                          // /ToUnicode, which beats the empty string.
+                                          Entry::Occupied(_) => {}
                                        }
                                     }
-                                 },
-                              }
-                           }
-                        } else {
-                           match unicode_map {
-                              Some(ref mut unicode_map) if base_name.contains("FontAwesome") => {
-                                 // the fontawesome tex package will use glyph names that don't have a corresponding unicode
-                                 // code point, so we'll use an empty string instead. See issue #76
-                                 match unicode_map.entry(code as u32) {
-                                    Entry::Vacant(v) => {
-                                       v.insert("".to_owned());
+                                    _ => {
+                                       warn!("unknown glyph name '{}' for font {}", name, base_name);
                                     }
-                                    // Anything already mapped came from
-                                    // /ToUnicode, which beats the empty string.
-                                    Entry::Occupied(_) => {}
                                  }
-                              }
-                              _ => {
-                                 warn!("unknown glyph name '{}' for font {}", name, base_name);
                               }
                            }
                         }
@@ -273,7 +296,13 @@ impl<'a> PdfSimpleFont<'a> {
                for (code, name) in type1_encoding {
                   let unicode = glyphnames::name_to_unicode(&pdf_to_utf8(&name));
                   if let Some(unicode) = unicode {
-                     table[code as usize] = unicode;
+                     match encoding_slot(&table, code as i64) {
+                        Some(slot) => table[slot] = unicode,
+                        None => warn!(
+                           "the embedded Type 1 program encodes code {}, which is not a single-byte code; ignoring it",
+                           code
+                        ),
+                     }
                   }
                }
                encoding_table = Some(table)
@@ -472,8 +501,13 @@ impl<'a> PdfType3Font<'a> {
                         // XXX: names of Type1 fonts can map to arbitrary strings instead of real
                         // unicode names, so we should probably handle this differently
                         let unicode = glyphnames::name_to_unicode(&name);
-                        if let Some(unicode) = unicode {
-                           table[code as usize] = unicode;
+                        match (unicode, encoding_slot(&table, code)) {
+                           (Some(unicode), Some(slot)) => table[slot] = unicode,
+                           (_, None) => warn!(
+                              "/Differences gives code {} to glyph '{}', which is not a single-byte code; ignoring it",
+                              code, name
+                           ),
+                           (None, Some(_)) => {}
                         }
                         code += 1;
                      }
