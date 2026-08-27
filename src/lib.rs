@@ -170,6 +170,10 @@ pub fn output_doc_encrypted(
 }
 
 /// Parse a given document and output it to `output`
+///
+/// Damage is normally confined to the page that carries it, so a page that
+/// cannot be processed is logged and skipped rather than abandoning the pages
+/// after it. Use [`output_doc_page`] to be told about one page in particular.
 pub fn output_doc(doc: &Document, output: &mut dyn OutputDev) -> Result<(), PdfExtractError> {
    if doc.is_encrypted() {
       error!(
@@ -179,10 +183,10 @@ pub fn output_doc(doc: &Document, output: &mut dyn OutputDev) -> Result<(), PdfE
    let empty_resources = Dictionary::new();
    let pages = doc.get_pages();
    let mut p = Processor::new();
-   for dict in pages {
-      let page_num = dict.0;
-      let object_id = dict.1;
-      output_doc_inner(page_num, object_id, doc, &mut p, output, &empty_resources)?;
+   for (page_num, object_id) in pages {
+      if let Err(e) = output_doc_inner(page_num, object_id, doc, &mut p, output, &empty_resources) {
+         error!("page {} could not be processed, skipping it: {}", page_num, e);
+      }
    }
    Ok(())
 }
@@ -226,7 +230,10 @@ fn output_doc_inner<'a>(
    };
    let art_box = get::<Option<[f64; 4]>>(doc, page_dict, b"ArtBox")?.map(|x| (x[0], x[1], x[2], x[3]));
    output.begin_page(page_num, &media_box, art_box)?;
-   p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output, 0)?;
+   // A page that has begun has to end, whatever its content stream does: an
+   // output device that brackets its pages -- HTML and SVG both open a tag in
+   // `begin_page` -- would otherwise be left holding an unclosed one.
+   let result = p.process_stream(doc, doc.get_page_content(object_id), resources, &media_box, output, 0);
    output.end_page()?;
-   Ok(())
+   result
 }

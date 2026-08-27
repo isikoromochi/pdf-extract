@@ -225,3 +225,36 @@ build({
         b" /Contents 9 0 R >>"),
     9: stream(b"", b"BT /F1 24 Tf 20 100 Td (PAGE-THREE) Tj ET"),
 }, "broken_middle_page.pdf")
+
+
+# --------------------------------------------------------------------------
+# 12. /StandardEncoding, which 32000-1 Annex D lists alongside the Mac and
+#     WinAnsi encodings. Its table was present but unreachable, so naming it
+#     used to fail the whole document over an encoding the crate had all along.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"BT /F1 24 Tf 20 100 Td (Hello) Tj ET"),
+    5: (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica"
+        b" /Encoding /StandardEncoding >>"),
+}, "standard_encoding.pdf")
+
+
+# --------------------------------------------------------------------------
+# 13. An /Indexed colour space, which this crate does not implement, on a page
+#     that also shows text. Extraction discards colour, so the colour space it
+#     could not read has to cost the page its fill and nothing else.
+# --------------------------------------------------------------------------
+build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 200] >>",
+    3: (b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 0 R >>"
+        b" /ColorSpace << /CS0 [/Indexed /DeviceRGB 1 <FF000000FF00>] >> >>"
+        b" /Contents 4 0 R >>"),
+    4: stream(b"", b"/CS0 cs 0 scn 10 10 50 50 re f"
+                   b" BT /F1 24 Tf 20 100 Td (Hello) Tj ET"),
+    5: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+}, "indexed_colorspace.pdf")

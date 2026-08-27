@@ -5,10 +5,30 @@
 //! doesn't crash. Regenerate the fixtures with
 //! `python tests/fixtures/generate.py`.
 
-use pdf_extract::{PdfExtractError, extract_text, extract_text_by_pages};
+use pdf_extract::lopdf::Document;
+use pdf_extract::{
+    PdfExtractError, PlainTextOutput, extract_text, extract_text_by_pages, output_doc_page,
+};
 
 fn fixture(name: &str) -> String {
     format!("tests/fixtures/{}.pdf", name)
+}
+
+/// Extract one page through the entry point that reports what went wrong.
+///
+/// `extract_text` and `output_doc` log a page they cannot process and move to
+/// the next one, since damage is normally confined to the page carrying it.
+/// `output_doc_page` is asked for one page in particular, so it says why that
+/// page did not come out. The tests below are about the errors themselves, so
+/// they go through this one.
+fn extract_page(name: &str, page_num: u32) -> Result<String, PdfExtractError> {
+    let doc = Document::load(fixture(name))?;
+    let mut s = String::new();
+    {
+        let mut output = PlainTextOutput::new(&mut s);
+        output_doc_page(&doc, &mut output, page_num)?;
+    }
+    Ok(s)
 }
 
 #[test]
@@ -77,7 +97,7 @@ fn dangling_reference_is_an_error() {
     // /F1 points at an object the file does not contain. Corruption like this is
     // ordinary, and has to arrive as an error the caller can handle rather than
     // as a panic.
-    let err = extract_text(fixture("dangling_font_reference")).unwrap_err();
+    let err = extract_page("dangling_font_reference", 1).unwrap_err();
     assert!(
         matches!(err, PdfExtractError::PdfError(_)),
         "expected the dangling reference to surface as a PDF error, got {:?}",
@@ -89,7 +109,7 @@ fn dangling_reference_is_an_error() {
 fn missing_required_entry_is_an_error() {
     // 32000-1 9.7.4 requires /DescendantFonts on a Type 0 font. Its absence is a
     // statement about the file, so it should read as one.
-    let err = extract_text(fixture("type0_without_descendants")).unwrap_err();
+    let err = extract_page("type0_without_descendants", 1).unwrap_err();
     let PdfExtractError::MalformedPdf(message) = &err else {
         panic!("expected a MalformedPdf error, got {:?}", err);
     };
@@ -105,7 +125,7 @@ fn missing_type3_width_is_an_error() {
     // The font's /Widths covers code 65 and the page shows code 66. A Type 3
     // font carries no metrics of its own to fall back on, so the gap reaches
     // the caller through PdfFont::get_width rather than aborting.
-    let err = extract_text(fixture("type3_missing_width")).unwrap_err();
+    let err = extract_page("type3_missing_width", 1).unwrap_err();
     let PdfExtractError::MalformedPdf(message) = &err else {
         panic!("expected a MalformedPdf error, got {:?}", err);
     };
@@ -152,4 +172,36 @@ fn a_broken_page_does_not_end_the_run() {
             "\n\nPAGE-THREE".to_string()
         ]
     );
+}
+
+#[test]
+fn a_named_encoding_we_have_a_table_for_is_used() {
+    // /StandardEncoding is one of the encodings 32000-1 Annex D names, and its
+    // table has been sitting in encodings.rs unused. Naming it used to return
+    // Unsupported for the whole document.
+    assert_eq!(extract_text(fixture("standard_encoding")).unwrap(), "\n\nHello");
+}
+
+#[test]
+fn an_unreadable_colorspace_does_not_cost_the_text() {
+    // /Indexed is not implemented here. Extraction discards colour, so the page
+    // that uses it must still give up its text; it used to give up nothing but.
+    assert_eq!(extract_text(fixture("indexed_colorspace")).unwrap(), "\n\nHello");
+}
+
+#[test]
+fn a_broken_page_is_skipped_rather_than_ending_the_document() {
+    // The other side of the tests above: the same damage, reached through the
+    // entry point that is given the whole document. Page 2 is logged and left
+    // out, and the pages around it come back.
+    // PlainTextOutput writes nothing at a page boundary, so pages that draw at
+    // the same coordinates run together -- as they do for any intact document.
+    assert_eq!(
+        extract_text(fixture("broken_middle_page")).unwrap(),
+        "\n\nPAGE-ONEPAGE-THREE"
+    );
+
+    // A document whose only page is damaged is the degenerate case of that: no
+    // text, and no error, because there was no undamaged page to report on.
+    assert_eq!(extract_text(fixture("dangling_font_reference")).unwrap(), "");
 }

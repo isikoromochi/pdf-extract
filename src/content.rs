@@ -106,41 +106,50 @@ fn name<'a>(op: &'a Operation, i: usize) -> Result<&'a [u8], PdfExtractError> {
    Ok(operand(op, i)?.as_name()?)
 }
 
-fn apply_state(doc: &Document, gs: &mut GraphicsState, state: &Dictionary) -> Result<(), PdfExtractError> {
+/// The colour space `name` denotes, or `DeviceGray` if it cannot be read.
+///
+/// Text extraction discards colour, so a colour space this crate does not
+/// implement -- /Indexed, say -- costs the caller a value it was never going to
+/// look at. Say so and carry on; the page's text is worth more.
+fn colorspace_or_default<'a>(doc: &'a Document, name: &[u8], resources: &'a Dictionary) -> ColorSpace {
+   match make_colorspace(doc, name, resources) {
+      Ok(colorspace) => colorspace,
+      Err(e) => {
+         warn!("using DeviceGray in place of colour space /{}: {}", String::from_utf8_lossy(name), e);
+         ColorSpace::DeviceGray
+      }
+   }
+}
+
+/// Apply an /ExtGState (32000-1 8.4.5).
+///
+/// Nothing here reaches the text, so an entry that is not what the spec says it
+/// should be is reported and passed over rather than ending the page.
+fn apply_state(doc: &Document, gs: &mut GraphicsState, state: &Dictionary) {
    for (k, v) in state.iter() {
       let k: &[u8] = k.as_ref();
       match k {
-         b"SMask" => match maybe_deref(doc, v)? {
-            Object::Name(name) => {
+         b"SMask" => match maybe_deref(doc, v) {
+            Ok(Object::Name(name)) => {
                if name == b"None" {
                   gs.smask = None;
                } else {
                   warn!("unexpected /SMask name /{}", String::from_utf8_lossy(name));
                }
             }
-            Object::Dictionary(dict) => {
+            Ok(Object::Dictionary(dict)) => {
                gs.smask = Some(dict.clone());
             }
-            other => {
-               return Err(PdfExtractError::MalformedPdf(format!(
-                  "/SMask must be a name or a dictionary, found {:?}",
-                  other
-               )));
-            }
+            Ok(other) => warn!("/SMask must be a name or a dictionary, found {:?}", other),
+            Err(e) => warn!("could not read /SMask: {}", e),
          },
          b"Type" => match v {
             Object::Name(name) if name == b"ExtGState" => {}
-            other => {
-               return Err(PdfExtractError::MalformedPdf(format!(
-                  "an /ExtGState must have /Type /ExtGState, found {:?}",
-                  other
-               )));
-            }
+            other => warn!("an /ExtGState must have /Type /ExtGState, found {:?}", other),
          },
          _ => {}
       }
    }
-   Ok(())
 }
 
 /// Form XObjects nest, and a malformed file can nest them without end -- a form
@@ -220,24 +229,20 @@ impl<'a> Processor<'a> {
                gs.ctm = gs.ctm.pre_transform(&m);
             }
             "CS" => {
-               let name = name(operation, 0)?;
-               gs.stroke_colorspace = make_colorspace(doc, name, resources)?;
+               gs.stroke_colorspace = colorspace_or_default(doc, name(operation, 0)?, resources);
             }
             "cs" => {
-               let name = name(operation, 0)?;
-               gs.fill_colorspace = make_colorspace(doc, name, resources)?;
+               gs.fill_colorspace = colorspace_or_default(doc, name(operation, 0)?, resources);
             }
+            // A colour operand that is not a number is a pattern name (32000-1
+            // 8.6.6.2). Take the numbers and pass over anything else, rather
+            // than reading the operands strictly enough to fail on a colour no
+            // text extraction is going to look at.
             "SC" | "SCN" => {
-               gs.stroke_color = match gs.stroke_colorspace {
-                  ColorSpace::Pattern => Vec::new(),
-                  _ => operation.operands.iter().map(as_num).collect::<Result<_, _>>()?,
-               };
+               gs.stroke_color = operation.operands.iter().filter_map(|o| as_num(o).ok()).collect();
             }
             "sc" | "scn" => {
-               gs.fill_color = match gs.fill_colorspace {
-                  ColorSpace::Pattern => Vec::new(),
-                  _ => operation.operands.iter().map(as_num).collect::<Result<_, _>>()?,
-               };
+               gs.fill_color = operation.operands.iter().filter_map(|o| as_num(o).ok()).collect();
             }
             // color-setting shorthands: unhandled
             "G" | "g" | "RG" | "rg" | "K" | "k" => {}
@@ -407,10 +412,13 @@ impl<'a> Processor<'a> {
                }
             }
             "gs" => {
-               let ext_gstate: &Dictionary = get(doc, resources, b"ExtGState")?;
+               // As with colour: an /ExtGState we cannot find or read holds
+               // nothing the text depends on.
                let name = name(operation, 0)?;
-               let state: &Dictionary = get(doc, ext_gstate, name)?;
-               apply_state(doc, &mut gs, state)?;
+               match get::<&Dictionary>(doc, resources, b"ExtGState").and_then(|d| get::<&Dictionary>(doc, d, name)) {
+                  Ok(state) => apply_state(doc, &mut gs, state),
+                  Err(e) => warn!("skipping /{}: {}", String::from_utf8_lossy(name), e),
+               }
             }
             // flatness tolerance: no bearing on text extraction
             "i" => {}

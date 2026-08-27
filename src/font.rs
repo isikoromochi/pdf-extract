@@ -79,30 +79,37 @@ fn is_core_font(name: &str) -> bool {
    )
 }
 
-fn encoding_to_unicode_table(name: &[u8]) -> Result<Vec<u16>, PdfExtractError> {
+/// What each code means under one of the named encodings of 32000-1 Annex D.
+///
+/// `None` for a name with no table here, which leaves the caller to fall back
+/// on PDFDocEncoding. A font whose codes are decoded through the wrong table
+/// gives up its accented and symbolic characters; a font that is not built at
+/// all gives up the page.
+fn encoding_to_unicode_table(name: &[u8]) -> Option<Vec<u16>> {
    let encoding = match name {
       b"MacRomanEncoding" => encodings::MAC_ROMAN_ENCODING,
       b"MacExpertEncoding" => encodings::MAC_EXPERT_ENCODING,
       b"WinAnsiEncoding" => encodings::WIN_ANSI_ENCODING,
+      b"StandardEncoding" => encodings::STANDARD_ENCODING,
       _ => {
-         return Err(PdfExtractError::Unsupported(format!(
-            "encoding /{}",
-            pdf_to_utf8(name)
-         )));
+         warn!("no table for encoding /{}; decoding as PDFDocEncoding", pdf_to_utf8(name));
+         return None;
       }
    };
 
-   Ok(encoding
-      .iter()
-      .map(|x| {
-         if let &Some(x) = x {
-            // The names in our own encoding tables are all in the glyph list.
-            glyphnames::name_to_unicode(x).expect(CORE_METRICS_GLYPH)
-         } else {
-            0
-         }
-      })
-      .collect())
+   Some(
+      encoding
+         .iter()
+         .map(|x| {
+            if let &Some(x) = x {
+               // The names in our own encoding tables are all in the glyph list.
+               glyphnames::name_to_unicode(x).expect(CORE_METRICS_GLYPH)
+            } else {
+               0
+            }
+         })
+         .collect(),
+   )
 }
 
 /// Where `code` lands in an encoding table, if it lands in it at all.
@@ -198,23 +205,23 @@ impl<'a> PdfSimpleFont<'a> {
 
       let mut unicode_map = match unicode_map {
          Some(mut unicode_map) => {
-            unicode_map.extend(get_unicode_map(doc, font)?.unwrap_or_default());
+            unicode_map.extend(get_unicode_map(doc, font).unwrap_or_default());
             Some(unicode_map)
          }
-         None => get_unicode_map(doc, font)?,
+         None => get_unicode_map(doc, font),
       };
 
       let mut encoding_table = None;
       match encoding {
          Some(Object::Name(encoding_name)) => {
-            encoding_table = Some(encoding_to_unicode_table(encoding_name)?);
+            // An encoding we have no table for leaves the table unset, which
+            // decodes through PDFDocEncoding rather than refusing the font.
+            encoding_table = encoding_to_unicode_table(encoding_name);
          }
          Some(Object::Dictionary(encoding)) => {
-            let mut table = if let Some(base_encoding) = maybe_get_name(doc, encoding, b"BaseEncoding") {
-               encoding_to_unicode_table(base_encoding)?
-            } else {
-               Vec::from(PDF_DOC_ENCODING)
-            };
+            let mut table = maybe_get_name(doc, encoding, b"BaseEncoding")
+               .and_then(encoding_to_unicode_table)
+               .unwrap_or_else(|| Vec::from(PDF_DOC_ENCODING));
             let differences = maybe_get_array(doc, encoding, b"Differences");
             if let Some(differences) = differences {
                let mut code = 0;
@@ -474,20 +481,20 @@ impl<'a> PdfSimpleFont<'a> {
 
 impl<'a> PdfType3Font<'a> {
    fn new(doc: &'a Document, font: &'a Dictionary) -> Result<PdfType3Font<'a>, PdfExtractError> {
-      let unicode_map = get_unicode_map(doc, font)?;
+      let unicode_map = get_unicode_map(doc, font);
       let encoding: Option<&Object> = get(doc, font, b"Encoding")?;
 
       let encoding_table;
       match encoding {
          Some(Object::Name(encoding_name)) => {
-            encoding_table = Some(encoding_to_unicode_table(encoding_name)?);
+            // An encoding we have no table for leaves the table unset, which
+            // decodes through PDFDocEncoding rather than refusing the font.
+            encoding_table = encoding_to_unicode_table(encoding_name);
          }
          Some(Object::Dictionary(encoding)) => {
-            let mut table = if let Some(base_encoding) = maybe_get_name(doc, encoding, b"BaseEncoding") {
-               encoding_to_unicode_table(base_encoding)?
-            } else {
-               Vec::from(PDF_DOC_ENCODING)
-            };
+            let mut table = maybe_get_name(doc, encoding, b"BaseEncoding")
+               .and_then(encoding_to_unicode_table)
+               .unwrap_or_else(|| Vec::from(PDF_DOC_ENCODING));
             let differences = maybe_get_array(doc, encoding, b"Differences");
             if let Some(differences) = differences {
                let mut code = 0;
@@ -693,18 +700,23 @@ struct PdfCIDFont<'a> {
    default_width: f64,
 }
 
-fn get_unicode_map<'a>(
-   doc: &'a Document,
-   font: &'a Dictionary,
-) -> Result<Option<HashMap<u32, String>>, PdfExtractError> {
+/// The /ToUnicode CMap of `font`, if it has one this crate can read.
+///
+/// /ToUnicode is optional (32000-1 9.10.3), so every caller already handles its
+/// absence -- which makes "absent" the right answer for one that cannot be
+/// parsed too. A simple font falls back on its /Encoding; a CID font has
+/// nothing to fall back on and gives up its text, but only its own.
+fn get_unicode_map<'a>(doc: &'a Document, font: &'a Dictionary) -> Option<HashMap<u32, String>> {
    let to_unicode = maybe_get_obj(doc, font, b"ToUnicode");
    let mut unicode_map = None;
    match to_unicode {
       Some(Object::Stream(stream)) => {
          let contents = get_contents(stream);
 
-         let cmap = adobe_cmap_parser::get_unicode_map(&contents)
-            .map_err(|_| PdfExtractError::MalformedPdf("could not parse the /ToUnicode CMap".to_owned()))?;
+         let Ok(cmap) = adobe_cmap_parser::get_unicode_map(&contents) else {
+            warn!("could not parse the /ToUnicode CMap; falling back on the encoding");
+            return None;
+         };
          let mut unicode = HashMap::new();
          // "It must use the beginbfchar, endbfchar, beginbfrange, and endbfrange operators to
          // define the mapping from character codes to Unicode character sequences expressed in
@@ -736,19 +748,17 @@ fn get_unicode_map<'a>(
       }
       None => {}
       Some(Object::Name(name)) => {
-         let name = pdf_to_utf8(name);
-         if name != "Identity-H" {
-            return Err(PdfExtractError::Unsupported(format!("/ToUnicode CMap /{}", name)));
+         // A predefined CMap names a mapping we would have to carry a table
+         // for. Identity-H is the one that needs no table.
+         if name != b"Identity-H" {
+            warn!("no table for the predefined /ToUnicode CMap /{}", pdf_to_utf8(name));
          }
       }
       Some(other) => {
-         return Err(PdfExtractError::MalformedPdf(format!(
-            "/ToUnicode must be a stream or a name, found {:?}",
-            other
-         )));
+         warn!("/ToUnicode must be a stream or a name, found {:?}", other);
       }
    }
-   Ok(unicode_map)
+   unicode_map
 }
 
 impl<'a> PdfCIDFont<'a> {
@@ -801,7 +811,7 @@ impl<'a> PdfCIDFont<'a> {
       // We should also look inside the truetype data to see if there's a cmap table. It will help us convert as well.
       // This won't work if the cmap has been subsetted. A better approach might be to hash glyph contents and use that against
       // a global library of glyph hashes
-      let unicode_map = get_unicode_map(doc, font)?;
+      let unicode_map = get_unicode_map(doc, font);
 
       let font_dict = maybe_get_obj(doc, ciddict, b"FontDescriptor")
          .ok_or_else(|| PdfExtractError::MalformedPdf("a CIDFont requires /FontDescriptor".to_owned()))?;
@@ -905,5 +915,42 @@ impl<'a> PdfFontDescriptor<'a> {
 impl<'a> fmt::Debug for PdfFontDescriptor<'a> {
    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
       self.desc.fmt(f)
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   /// Every name reached for in `encoding_to_unicode_table` has to resolve
+   /// through the glyph list, or asking for that encoding panics on the
+   /// `expect` instead of returning a table.
+   #[test]
+   fn every_named_encoding_builds() {
+      for name in [
+         &b"MacRomanEncoding"[..],
+         b"MacExpertEncoding",
+         b"WinAnsiEncoding",
+         b"StandardEncoding",
+      ] {
+         let table = encoding_to_unicode_table(name).expect("a name listed here has a table");
+         assert_eq!(table.len(), 256, "/{}", pdf_to_utf8(name));
+      }
+   }
+
+   /// An encoding with no table is a gap in this crate, not in the file, so it
+   /// leaves the caller to fall back rather than refusing the font.
+   #[test]
+   fn an_unknown_encoding_has_no_table() {
+      assert_eq!(encoding_to_unicode_table(b"NoSuchEncoding"), None);
+   }
+
+   #[test]
+   fn encoding_slots_are_single_byte_codes() {
+      let table = vec![0u16; 256];
+      assert_eq!(encoding_slot(&table, 0), Some(0));
+      assert_eq!(encoding_slot(&table, 255), Some(255));
+      assert_eq!(encoding_slot(&table, 256), None);
+      assert_eq!(encoding_slot(&table, -1), None);
    }
 }
