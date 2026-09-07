@@ -41,10 +41,7 @@ struct PdfType3Font<'a> {
    widths: HashMap<CharCode, f64>, // should probably just use i32 here
 }
 
-pub(crate) fn make_font<'a>(
-   doc: &'a Document,
-   font: &'a Dictionary,
-) -> Result<Rc<dyn PdfFont + 'a>, PdfExtractError> {
+pub(crate) fn make_font<'a>(doc: &'a Document, font: &'a Dictionary) -> Result<Rc<dyn PdfFont + 'a>, PdfExtractError> {
    let subtype = get_name_string(doc, font, b"Subtype")?;
    Ok(if subtype == "Type0" {
       Rc::new(PdfCIDFont::new(doc, font)?)
@@ -362,12 +359,13 @@ impl<'a> PdfSimpleFont<'a> {
             // on: report it rather than refusing the font.
             warn!(
                "/Widths has {} entries but /FirstChar {} and /LastChar {} imply {}",
-               i, first_char, last_char, last_char - first_char + 1
+               i,
+               first_char,
+               last_char,
+               last_char - first_char + 1
             );
          }
       } else {
-         // FIXME: `name` is computed to pick a substitute font, but the lookup below
-         // matches on `base_name`, so the Helvetica fallback never takes effect.
          let name = if is_core_font(&base_name) {
             &base_name
          } else {
@@ -389,8 +387,10 @@ impl<'a> PdfSimpleFont<'a> {
             // or the basename but for now we'll just use Helvetica
             "Helvetica"
          };
+         // `name` and not `base_name`: a font we have no metrics for is looked up
+         // under its substitute.
          for font_metrics in core_fonts::metrics().iter() {
-            if font_metrics.0 == base_name {
+            if font_metrics.0 == name {
                if let Some(ref encoding) = encoding_table {
                   for w in font_metrics.2 {
                      let c = glyphnames::name_to_unicode(w.2).expect(CORE_METRICS_GLYPH);
@@ -409,7 +409,7 @@ impl<'a> PdfSimpleFont<'a> {
                   for w in font_metrics.2 {
                      // -1 is "not encoded"
                      if w.0 != -1 {
-                        table[w.0 as usize] = if base_name == "ZapfDingbats" {
+                        table[w.0 as usize] = if name == "ZapfDingbats" {
                            zapfglyphnames::zapfdigbats_names_to_unicode(w.2).expect(CORE_METRICS_GLYPH)
                         } else {
                            glyphnames::name_to_unicode(w.2).expect(CORE_METRICS_GLYPH)
@@ -530,9 +530,7 @@ impl<'a> PdfType3Font<'a> {
             encoding_table = Some(table);
          }
          _ => {
-            return Err(PdfExtractError::MalformedPdf(
-               "/Encoding must be a name or a dictionary".to_owned(),
-            ));
+            return Err(PdfExtractError::MalformedPdf("/Encoding must be a name or a dictionary".to_owned()));
          }
       }
 
@@ -553,7 +551,10 @@ impl<'a> PdfType3Font<'a> {
          // on: report it rather than refusing the font.
          warn!(
             "/Widths has {} entries but /FirstChar {} and /LastChar {} imply {}",
-            i, first_char, last_char, last_char - first_char + 1
+            i,
+            first_char,
+            last_char,
+            last_char - first_char + 1
          );
       }
       Ok(PdfType3Font {
@@ -622,10 +623,7 @@ impl<'a> PdfFont for PdfSimpleFont<'a> {
          // some pdf's like http://arxiv.org/pdf/2312.00064v1 are missing entries in their unicode map but do have
          // entries in the encoding.
          let encoding = self.encoding.as_ref().map(|x| &x[..]).ok_or_else(|| {
-            PdfExtractError::MalformedPdf(format!(
-               "code {} is in neither the /ToUnicode map nor an /Encoding",
-               char
-            ))
+            PdfExtractError::MalformedPdf(format!("code {} is in neither the /ToUnicode map nor an /Encoding", char))
          })?;
          let s = to_utf8(encoding, &slice);
          debug!("falling back to encoding {} -> {:?}", char, s);
@@ -645,9 +643,11 @@ impl<'a> fmt::Debug for PdfSimpleFont<'a> {
 
 impl<'a> PdfFont for PdfType3Font<'a> {
    fn get_width(&self, id: CharCode) -> Result<f64, PdfExtractError> {
-      self.widths.get(&id).copied().ok_or_else(|| {
-         PdfExtractError::MalformedPdf(format!("a Type 3 font has no /Widths entry for code {}", id))
-      })
+      self
+         .widths
+         .get(&id)
+         .copied()
+         .ok_or_else(|| PdfExtractError::MalformedPdf(format!("a Type 3 font has no /Widths entry for code {}", id)))
    }
    /*fn decode(&self, chars: &[u8]) -> String {
        let encoding = self.encoding.as_ref().map(|x| &x[..]).unwrap_or(&PDFDocEncoding);
@@ -667,10 +667,7 @@ impl<'a> PdfFont for PdfType3Font<'a> {
          // some pdf's like http://arxiv.org/pdf/2312.00577v1 are missing entries in their unicode map but do have
          // entries in the encoding.
          let encoding = self.encoding.as_ref().map(|x| &x[..]).ok_or_else(|| {
-            PdfExtractError::MalformedPdf(format!(
-               "code {} is in neither the /ToUnicode map nor an /Encoding",
-               char
-            ))
+            PdfExtractError::MalformedPdf(format!("code {} is in neither the /ToUnicode map nor an /Encoding", char))
          })?;
          let s = to_utf8(encoding, &slice);
          debug!("falling back to encoding {} -> {:?}", char, s);
@@ -763,9 +760,8 @@ fn get_unicode_map<'a>(doc: &'a Document, font: &'a Dictionary) -> Option<HashMa
 
 impl<'a> PdfCIDFont<'a> {
    fn new(doc: &'a Document, font: &'a Dictionary) -> Result<PdfCIDFont<'a>, PdfExtractError> {
-      let descendants = maybe_get_array(doc, font, b"DescendantFonts").ok_or_else(|| {
-         PdfExtractError::MalformedPdf("a Type 0 font requires /DescendantFonts".to_owned())
-      })?;
+      let descendants = maybe_get_array(doc, font, b"DescendantFonts")
+         .ok_or_else(|| PdfExtractError::MalformedPdf("a Type 0 font requires /DescendantFonts".to_owned()))?;
       let first = descendants
          .first()
          .ok_or_else(|| PdfExtractError::MalformedPdf("/DescendantFonts is empty".to_owned()))?;
@@ -831,12 +827,15 @@ impl<'a> PdfCIDFont<'a> {
                }
                i += 2;
             } else {
-               // FIXME: the range form is `c_first c_last w`, so c_last and the
-               // width should read w[i + 1] and w[i + 2]; both read w[i] here.
+               // The range form is `c_first c_last w` and covers c_last as well.
+               if i + 2 >= w.len() {
+                  warn!("/W ends with an incomplete `c_first c_last w` entry");
+                  break;
+               }
                let c_first = w[i].as_i64()?;
-               let c_last = w[i].as_i64()?;
-               let c_width = as_num(w[i])?;
-               for id in c_first..c_last {
+               let c_last = w[i + 1].as_i64()?;
+               let c_width = as_num(w[i + 2])?;
+               for id in c_first..=c_last {
                   widths.insert(id as CharCode, c_width);
                }
                i += 3;
